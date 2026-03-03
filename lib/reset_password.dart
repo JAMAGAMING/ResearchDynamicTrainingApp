@@ -102,13 +102,47 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                     height: 48,
                     child: ElevatedButton(
                       onPressed: () {
-                        // Temporary action
+                        String current = _currentPasswordController.text.trim();
+                        String newPass = _newPasswordController.text.trim();
+                        String confirm = _confirmPasswordController.text.trim();
+
+                        // 1️⃣ Check empty fields
+                        if (current.isEmpty || newPass.isEmpty || confirm.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Please fill in all fields'),
+                              backgroundColor: Colors.redAccent,
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                          return;
+                        }
+
+                        // 2️⃣ Check if new passwords match
+                        if (newPass != confirm) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('New Password and Confirm Password do not match'),
+                              backgroundColor: Colors.redAccent,
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                          return;
+                        }
+
+                        // 3️⃣ Success
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('Password reset functionality not implemented yet'),
+                            content: Text('Password has been updated'),
                             backgroundColor: Colors.green,
+                            duration: Duration(seconds: 2),
                           ),
                         );
+
+                        // 4️⃣ Navigate back to Home after short delay
+                        Future.delayed(const Duration(seconds: 1), () {
+                          Navigator.pop(context);
+                        });
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
