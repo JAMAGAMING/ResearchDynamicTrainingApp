@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'calendar.dart';
 import 'login.dart';
+import 'reset_password.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -76,26 +77,6 @@ class HomePage extends StatelessWidget {
                                     color: Colors.grey,
                                   ),
                                 ),
-                                const SizedBox(height: 20),
-
-                                ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.black,
-                                  ),
-                                  onPressed: () {
-                                    Navigator.pushAndRemoveUntil(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => const LoginScreen(),
-                                      ),
-                                          (route) => false,
-                                    );
-                                  },
-                                  child: const Text(
-                                    'Reset Password',
-                                    style: TextStyle(color: Colors.white),
-                                  ),
-                                ),
 
                                 const SizedBox(height: 20),
 
@@ -117,6 +98,25 @@ class HomePage extends StatelessWidget {
                                     style: TextStyle(color: Colors.white),
                                   ),
                                 ),
+
+                                const SizedBox(height: 20),
+
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.black,
+                                  ),
+                                  onPressed: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(builder: (_) => const ResetPasswordScreen()),
+                                    );
+                                  },
+                                  child: const Text(
+                                    'Reset Password',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                ),
+
                               ],
                             ),
                           ),
