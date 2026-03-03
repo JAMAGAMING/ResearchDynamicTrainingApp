@@ -1,15 +1,6 @@
 import 'package:flutter/material.dart';
 import 'calendar.dart';
-
-// ─────────────────────────────────────────────
-//  HOW TO USE IN YOUR main.dart:
-//
-//  1. Import this file:
-//       import 'homepage.dart';
-//
-//  2. Set it as your home:
-//       home: const HomePage(),
-// ─────────────────────────────────────────────
+import 'login.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -24,20 +15,109 @@ class HomePage extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Home', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          '',
+          style: TextStyle(color: Colors.white),
+        ),
         centerTitle: true,
+        actions: [
+          Row(
+            children: [
+              const Text(
+                'Username',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.person),
+                color: Colors.white,
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) {
+                      return Dialog(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Container(
+                          width: 300,
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const CircleAvatar(
+                                radius: 40,
+                                backgroundColor: Colors.black,
+                                child: Icon(
+                                  Icons.person,
+                                  size: 50,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              const Text(
+                                'Full Name',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text(
+                                'Username',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                              const SizedBox(height: 20),
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.black,
+                                ),
+                                onPressed: () {
+                                  Navigator.pushAndRemoveUntil(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => const LoginScreen(),
+                                    ),
+                                        (route) => false, // removes all previous routes
+                                  );
+                                },
+                                child: const Text(
+                                  'Log Out',
+                                  style: TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
-        child: isLandscape ? const _LandscapeLayout() : const _PortraitLayout(),
+        child: isLandscape
+            ? const _LandscapeLayout()
+            : const _PortraitLayout(),
       ),
     );
   }
 }
 
-// ─────────────────────────────────────────────
-//  Portrait: stacked vertically
-// ─────────────────────────────────────────────
 class _PortraitLayout extends StatelessWidget {
   const _PortraitLayout();
 
@@ -52,54 +132,57 @@ class _PortraitLayout extends StatelessWidget {
         SizedBox(height: 140, child: _CreateTrainingPlanWidget()),
         SizedBox(height: 12),
         SizedBox(height: 140, child: _TrainingCalendarWidget()),
+        SizedBox(height: 12),
+        SizedBox(height: 90, child: _SelectTrainingPlanWidget()),
       ],
     );
   }
 }
 
-// ─────────────────────────────────────────────
-//  Landscape: 2x2 grid
-// ─────────────────────────────────────────────
 class _LandscapeLayout extends StatelessWidget {
   const _LandscapeLayout();
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            children: [
-              SizedBox(height: 140, child: _TotalKmWidget()),
-              SizedBox(height: 12),
-              SizedBox(height: 140, child: _CreateTrainingPlanWidget()),
-            ],
-          ),
+    return Column(
+      children: const [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                children: [
+                  SizedBox(height: 140, child: _TotalKmWidget()),
+                  SizedBox(height: 12),
+                  SizedBox(height: 140, child: _CreateTrainingPlanWidget()),
+                ],
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                children: [
+                  SizedBox(height: 140, child: _TrainingOfTheDayWidget()),
+                  SizedBox(height: 12),
+                  SizedBox(height: 140, child: _TrainingCalendarWidget()),
+                ],
+              ),
+            ),
+          ],
         ),
-        SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            children: [
-              SizedBox(height: 140, child: _TrainingOfTheDayWidget()),
-              SizedBox(height: 12),
-              SizedBox(height: 140, child: _TrainingCalendarWidget()),
-            ],
-          ),
-        ),
+        SizedBox(height: 12),
+        SizedBox(height: 90, child: _SelectTrainingPlanWidget()),
       ],
     );
   }
 }
 
-// ─────────────────────────────────────────────
-//  Reusable card base
-// ─────────────────────────────────────────────
 class _HomeCard extends StatelessWidget {
   final Widget child;
   final VoidCallback onTap;
+  final Color? color;
 
-  const _HomeCard({required this.child, required this.onTap});
+  const _HomeCard({required this.child, required this.onTap, this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -109,7 +192,7 @@ class _HomeCard extends StatelessWidget {
         width: double.infinity,
         height: double.infinity,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: color ?? Colors.white,
           borderRadius: BorderRadius.circular(16),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -120,8 +203,148 @@ class _HomeCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-//  Widget 1 — Total Kilometers Ran
+//  Popup — Create / Modify Training Plan
 // ─────────────────────────────────────────────
+void _showTrainingPlanOptions(BuildContext context) {
+  showDialog(
+    context: context,
+    builder: (context) {
+      return Dialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Training Plan',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'What would you like to do?',
+                  style: TextStyle(fontSize: 13, color: Colors.black45),
+                ),
+                const SizedBox(height: 20),
+
+                // Option 1 — Create Training Plan
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context);
+                    // TODO: Navigate to Create Training Plan page
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Row(
+                      children: const [
+                        Icon(Icons.add_circle_outline, color: Colors.white, size: 24),
+                        SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Create Training Plan',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Build a new plan from scratch',
+                                style: TextStyle(color: Colors.white60, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right, color: Colors.white54, size: 20),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // Option 2 — Modify Training Plan
+                GestureDetector(
+                  onTap: () {
+                    Navigator.pop(context);
+                    // TODO: Navigate to Modify Training Plan page
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                    decoration: BoxDecoration(
+                      color: Colors.black,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Row(
+                      children: const [
+                        Icon(Icons.edit_outlined, color: Colors.white, size: 24),
+                        SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Modify Training Plan',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Edit your existing plan',
+                                style: TextStyle(color: Colors.white60, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(Icons.chevron_right, color: Colors.white54, size: 20),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                Center(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(color: Colors.black45, fontSize: 14),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 class _TotalKmWidget extends StatelessWidget {
   const _TotalKmWidget();
 
@@ -137,11 +360,7 @@ class _TotalKmWidget extends StatelessWidget {
         children: [
           const Text(
             'Total Kilometers Ran',
-            style: TextStyle(
-              fontSize: 13,
-              color: Colors.black54,
-              fontWeight: FontWeight.w500,
-            ),
+            style: TextStyle(fontSize: 13, color: Colors.black54, fontWeight: FontWeight.w500),
           ),
           const SizedBox(height: 8),
           FittedBox(
@@ -153,11 +372,7 @@ class _TotalKmWidget extends StatelessWidget {
                 SizedBox(width: 8),
                 Text(
                   '20 km',
-                  style: TextStyle(
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
-                  ),
+                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black),
                 ),
               ],
             ),
@@ -168,9 +383,6 @@ class _TotalKmWidget extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────
-//  Widget 2 — Training of the Day
-// ─────────────────────────────────────────────
 class _TrainingOfTheDayWidget extends StatelessWidget {
   const _TrainingOfTheDayWidget();
 
@@ -191,36 +403,24 @@ class _TrainingOfTheDayWidget extends StatelessWidget {
             alignment: Alignment.centerLeft,
             child: Text(
               'Training of the Day',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: Colors.black,
-              ),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black),
             ),
           ),
           SizedBox(height: 4),
-          Text(
-            'View today\'s workout',
-            style: TextStyle(fontSize: 12, color: Colors.black45),
-          ),
+          Text('View today\'s workout', style: TextStyle(fontSize: 12, color: Colors.black45)),
         ],
       ),
     );
   }
 }
 
-// ─────────────────────────────────────────────
-//  Widget 3 — Create Training Plan
-// ─────────────────────────────────────────────
 class _CreateTrainingPlanWidget extends StatelessWidget {
   const _CreateTrainingPlanWidget();
 
   @override
   Widget build(BuildContext context) {
     return _HomeCard(
-      onTap: () {
-        // TODO: navigate to create training plan page
-      },
+      onTap: () => _showTrainingPlanOptions(context), // ← triggers popup
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -232,27 +432,17 @@ class _CreateTrainingPlanWidget extends StatelessWidget {
             alignment: Alignment.centerLeft,
             child: Text(
               'Create/Modify Training Plan',
-              style: TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                color: Colors.black,
-              ),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black),
             ),
           ),
           SizedBox(height: 4),
-          Text(
-            'Build a new plan',
-            style: TextStyle(fontSize: 12, color: Colors.black45),
-          ),
+          Text('Build a new plan', style: TextStyle(fontSize: 12, color: Colors.black45)),
         ],
       ),
     );
   }
 }
 
-// ─────────────────────────────────────────────
-//  Widget 4 — Training Calendar
-// ─────────────────────────────────────────────
 class _TrainingCalendarWidget extends StatelessWidget {
   const _TrainingCalendarWidget();
 
@@ -278,21 +468,45 @@ class _TrainingCalendarWidget extends StatelessWidget {
                 SizedBox(height: 8),
                 Text(
                   'Training Calendar',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black,
-                  ),
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black),
                 ),
                 SizedBox(height: 4),
-                Text(
-                  'View your schedule',
-                  style: TextStyle(fontSize: 12, color: Colors.black45),
-                ),
+                Text('View your schedule', style: TextStyle(fontSize: 12, color: Colors.black45)),
               ],
             ),
           ),
           const Icon(Icons.chevron_right, size: 28, color: Colors.black45),
+        ],
+      ),
+    );
+  }
+}
+
+class _SelectTrainingPlanWidget extends StatelessWidget {
+  const _SelectTrainingPlanWidget();
+
+  @override
+  Widget build(BuildContext context) {
+    return _HomeCard(
+      color: Colors.white,
+      onTap: () {
+        // TODO: navigate to select training plan page
+      },
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: const [
+          Row(
+            children: [
+              Icon(Icons.fitness_center, size: 28, color: Colors.black),
+              SizedBox(width: 12),
+              Text(
+                'Select Training Plan',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.black),
+              ),
+            ],
+          ),
+          Icon(Icons.chevron_right, size: 28, color: Colors.black45),
         ],
       ),
     );
