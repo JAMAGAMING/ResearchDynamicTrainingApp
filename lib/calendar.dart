@@ -1,25 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
-
-// ─────────────────────────────────────────────
-//  HOW TO USE IN YOUR main.dart:
-//
-//  1. Add to pubspec.yaml:
-//       dependencies:
-//         table_calendar: ^3.1.2
-//
-//  2. Import this file:
-//       import 'training_calendar.dart';
-//
-//  3. Navigate to it:
-//       Navigator.push(
-//         context,
-//         MaterialPageRoute(builder: (_) => const TrainingCalendarPage()),
-//       );
-// ─────────────────────────────────────────────
+import 'training_plan_model.dart';
+import 'plan_storage.dart';
 
 class TrainingCalendarPage extends StatefulWidget {
-  const TrainingCalendarPage({super.key});
+  final TrainingPlan? activePlan;
+
+  const TrainingCalendarPage({super.key, this.activePlan});
 
   @override
   State<TrainingCalendarPage> createState() => _TrainingCalendarPageState();
@@ -28,15 +15,38 @@ class TrainingCalendarPage extends StatefulWidget {
 class _TrainingCalendarPageState extends State<TrainingCalendarPage> {
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
+  TrainingPlan? _plan;
 
-  // Events map — add your events here later
-  // Key: DateTime (normalised to midnight), Value: list of event strings
-  final Map<DateTime, List<String>> _events = {};
+  @override
+  void initState() {
+    super.initState();
+    _loadPlan();
+  }
 
-  DateTime _normalise(DateTime d) => DateTime(d.year, d.month, d.day);
+  Future<void> _loadPlan() async {
+    final plan = await PlanStorage.loadActive();
+    if (mounted) setState(() => _plan = plan);
+  }
 
-  List<String> _getEventsForDay(DateTime day) =>
-      _events[_normalise(day)] ?? [];
+  bool _isCompletedDay(DateTime day) {
+    final w = _plan?.getWorkoutForDate(day);
+    return w != null && w.isCompleted;
+  }
+
+  bool _isWorkoutDay(DateTime day) {
+    final w = _plan?.getWorkoutForDate(day);
+    return w != null && !w.isRest && !w.isUnavailable;
+  }
+
+  bool _isUnavailableDay(DateTime day) {
+    final w = _plan?.getWorkoutForDate(day);
+    return w != null && w.isUnavailable;
+  }
+
+  bool _isRestDay(DateTime day) {
+    final w = _plan?.getWorkoutForDate(day);
+    return w != null && w.isRest && !w.isUnavailable;
+  }
 
   void _onDaySelected(DateTime selectedDay, DateTime focusedDay) {
     setState(() {
@@ -47,6 +57,8 @@ class _TrainingCalendarPageState extends State<TrainingCalendarPage> {
   }
 
   void _showDayDialog(DateTime day) {
+    final workout = _plan?.getWorkoutForDate(day);
+
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -59,38 +71,174 @@ class _TrainingCalendarPageState extends State<TrainingCalendarPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${day.day}/${day.month}/${day.year}',
+                '${_weekdayName(day.weekday)}, ${day.day}/${day.month}/${day.year}',
                 style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black,
-                ),
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black),
               ),
               const Divider(),
-              const Text(
-                '🏃 Training Plan',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black,
+
+              if (workout == null) ...[
+                const Text('🗓 No Training Plan',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                const SizedBox(height: 8),
+                const Text(
+                  'This day is not part of your active training plan. '
+                      'Create a plan from the home screen.',
+                  style: TextStyle(color: Colors.black54, fontSize: 13),
                 ),
-              ),
-              const SizedBox(height: 10),
-              const Text('• Warm-up: 10 min easy jog', style: TextStyle(color: Colors.black)),
-              const Text('• Main Set: 8km at tempo pace', style: TextStyle(color: Colors.black)),
-              const Text('• Intervals: 4x800m at 5K pace', style: TextStyle(color: Colors.black)),
-              const Text('• Cool-down: 10 min easy jog', style: TextStyle(color: Colors.black)),
-              const Text('• Stretching: 10 min', style: TextStyle(color: Colors.black)),
+
+              ] else if (workout.isUnavailable) ...[
+                const Text('🚫 Unavailable',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.red)),
+                const SizedBox(height: 10),
+                const Text('• You marked this day as unavailable.',
+                    style: TextStyle(color: Colors.black54)),
+                const Text('• The workout was moved to the nearest free day.',
+                    style: TextStyle(color: Colors.black54)),
+
+              ] else if (workout.isRest && workout.isRecreational) ...[
+                const Text('🌿 Rest / Recreational Day',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                const SizedBox(height: 10),
+                const Text(
+                    '• Optional light activity: walking, yoga, or stretching.',
+                    style: TextStyle(color: Colors.black)),
+                const Text('• Focus on rest, hydration, and recovery.',
+                    style: TextStyle(color: Colors.black)),
+
+              ] else if (workout.isRest) ...[
+                const Text('😴 Rest Day',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                const SizedBox(height: 10),
+                const Text('• Full rest — no running today.',
+                    style: TextStyle(color: Colors.black)),
+                const Text('• Stay hydrated and get good sleep.',
+                    style: TextStyle(color: Colors.black)),
+
+              ] else if (workout.isCompleted) ...[
+                const Text('✅ Workout Completed',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue)),
+                const SizedBox(height: 10),
+                const Text(
+                  'Great job! You completed this workout.',
+                  style: TextStyle(color: Colors.black),
+                ),
+                const SizedBox(height: 10),
+                _statRow('Warm-up', workout.warmupDisplay),
+                _statRow('Run interval', workout.runDisplay),
+                _statRow('Walk interval', workout.walkDisplay),
+                _statRow('Sets', '${workout.sets}'),
+                _statRow('Cool-down', workout.cooldownDisplay),
+
+              ] else ...[
+                const Text('🏃 Training Day',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                const SizedBox(height: 10),
+                _statRow('Warm-up', workout.warmupDisplay),
+                _statRow('Run interval', workout.runDisplay),
+                _statRow('Walk interval', workout.walkDisplay),
+                _statRow('Sets', '${workout.sets}'),
+                _statRow('Cool-down', workout.cooldownDisplay),
+              ],
+
               const SizedBox(height: 16),
+
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text('Close', style: TextStyle(color: Colors.black)),
+                  child: const Text('Close',
+                      style: TextStyle(color: Colors.black)),
                 ),
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _statRow(String label, String value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label,
+            style:
+            const TextStyle(fontSize: 13, color: Colors.black54)),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.black)),
+      ],
+    ),
+  );
+
+  String _weekdayName(int wd) =>
+      ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][wd - 1];
+
+  Widget _buildDayCell(DateTime day, {bool isSelected = false, bool isToday = false}) {
+    Color bg;
+
+    if (_isRestDay(day)) {
+    bg = Colors.orange.shade300;
+    } else if (_isUnavailableDay(day)) {
+      bg = Colors.red.shade300;
+    } else if (_isCompletedDay(day)) {
+      bg = Colors.blue.shade400;
+    } else if (_isWorkoutDay(day)) {
+      bg = Colors.green.shade400;
+    }  else {
+      bg = isToday ? Colors.grey.shade700 : Colors.white;
+    }
+
+    final textColor = (bg == Colors.white) ? Colors.black : Colors.white;
+
+    return Container(
+      margin: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: bg,
+        shape: BoxShape.rectangle,
+        borderRadius: BorderRadius.circular(6),
+        border: isSelected
+            ? Border.all(color: Colors.white, width: 2.5)
+            : isToday
+            ? Border.all(color: Colors.white54, width: 1.5)
+            : null,
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        '${day.day}',
+        style: TextStyle(
+          color: textColor,
+          fontSize: 13,
+          fontWeight: isSelected || isToday
+              ? FontWeight.bold
+              : FontWeight.normal,
+          decoration:
+          _isUnavailableDay(day) ? TextDecoration.lineThrough : null,
+          decorationColor: Colors.white,
         ),
       ),
     );
@@ -103,72 +251,96 @@ class _TrainingCalendarPageState extends State<TrainingCalendarPage> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Training Calendar', style: TextStyle(color: Colors.white)),
+        title: const Text('Training Calendar',
+            style: TextStyle(color: Colors.white)),
         centerTitle: true,
       ),
-      body: Container(
-        color: Colors.black,
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              TableCalendar(
-                availableGestures: AvailableGestures.horizontalSwipe, // lets SingleChildScrollView handle all gestures
-                rowHeight: 100,
-                firstDay: DateTime(2024),
-                lastDay: DateTime(2030),
-                focusedDay: _focusedDay,
-                selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-                onDaySelected: _onDaySelected,
-                eventLoader: _getEventsForDay,
-                headerStyle: const HeaderStyle(
-                  formatButtonVisible: false,
-                  titleCentered: true,
-                  titleTextStyle: TextStyle(color: Colors.white, fontSize: 16),
-                  leftChevronIcon: Icon(Icons.chevron_left, color: Colors.white),
-                  rightChevronIcon: Icon(Icons.chevron_right, color: Colors.white),
-                ),
-                daysOfWeekStyle: const DaysOfWeekStyle(
-                  weekdayStyle: TextStyle(color: Colors.white),
-                  weekendStyle: TextStyle(color: Colors.white),
-                ),
-                calendarStyle: CalendarStyle(
-                  cellAlignment: Alignment.topLeft,
-                  cellPadding: const EdgeInsets.only(top: 4, left: 6),
-                  defaultDecoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.rectangle,
-                  ),
-                  defaultTextStyle: const TextStyle(color: Colors.black),
-                  weekendDecoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.rectangle,
-                  ),
-                  weekendTextStyle: const TextStyle(color: Colors.black),
-                  outsideDecoration: const BoxDecoration(
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            TableCalendar(
+              availableGestures: AvailableGestures.horizontalSwipe,
+              firstDay: DateTime(2024),
+              lastDay: DateTime(2030),
+              focusedDay: _focusedDay,
+              selectedDayPredicate: (day) =>
+                  isSameDay(_selectedDay, day),
+              onDaySelected: _onDaySelected,
+              calendarBuilders: CalendarBuilders(
+                defaultBuilder: (context, day, focusedDay) =>
+                    _buildDayCell(day),
+                todayBuilder: (context, day, focusedDay) =>
+                    _buildDayCell(day, isToday: true),
+                selectedBuilder: (context, day, focusedDay) =>
+                    _buildDayCell(day, isSelected: true),
+                outsideBuilder: (context, day, focusedDay) => Container(
+                  margin: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
                     color: Colors.black,
-                    shape: BoxShape.rectangle,
+                    borderRadius: BorderRadius.circular(6),
                   ),
-                  outsideTextStyle: TextStyle(color: Colors.grey.shade600),
-                  todayDecoration: BoxDecoration(
-                    color: Colors.grey.withOpacity(0.5),
-                    shape: BoxShape.rectangle,
-                  ),
-                  todayTextStyle: const TextStyle(color: Colors.black),
-                  selectedDecoration: const BoxDecoration(
-                    color: Colors.grey,
-                    shape: BoxShape.rectangle,
-                  ),
-                  selectedTextStyle: const TextStyle(color: Colors.black),
-                  markerDecoration: const BoxDecoration(
-                    color: Colors.green,
-                    shape: BoxShape.circle,
-                  ),
+                  alignment: Alignment.center,
+                  child: Text('${day.day}',
+                      style: TextStyle(
+                          color: Colors.grey.shade700, fontSize: 13)),
                 ),
               ),
-            ],
-          ),
+              headerStyle: const HeaderStyle(
+                formatButtonVisible: false,
+                titleCentered: true,
+                titleTextStyle:
+                TextStyle(color: Colors.white, fontSize: 16),
+                leftChevronIcon:
+                Icon(Icons.chevron_left, color: Colors.white),
+                rightChevronIcon:
+                Icon(Icons.chevron_right, color: Colors.white),
+              ),
+              daysOfWeekStyle: const DaysOfWeekStyle(
+                weekdayStyle:
+                TextStyle(color: Colors.white70, fontSize: 12),
+                weekendStyle:
+                TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              calendarStyle: const CalendarStyle(
+                outsideDaysVisible: true,
+              ),
+            ),
+
+            if (_plan != null)
+              Padding(
+                padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _legendDot(Colors.green.shade400, 'Training'),
+                    const SizedBox(width: 20),
+                    _legendDot(Colors.orange.shade300, 'Rest'),
+                    const SizedBox(width: 20),
+                    _legendDot(Colors.blue.shade400, 'Completed'),
+                    const SizedBox(width: 20),
+                    _legendDot(Colors.red.shade300, 'Unavailable'),
+                  ],
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
+
+  Widget _legendDot(Color color, String label) => Row(
+    children: [
+      Container(
+        width: 12,
+        height: 12,
+        decoration: BoxDecoration(
+            color: color, borderRadius: BorderRadius.circular(3)),
+      ),
+      const SizedBox(width: 6),
+      Text(label,
+          style:
+          const TextStyle(color: Colors.white70, fontSize: 12)),
+    ],
+  );
 }
