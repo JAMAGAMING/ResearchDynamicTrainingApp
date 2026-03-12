@@ -1,0 +1,463 @@
+import 'dart:convert';
+import 'dart:math';
+
+// ─────────────────────────────────────────────
+//  Enums
+// ─────────────────────────────────────────────
+
+enum AgeGroup { teen, adult, elder }
+enum ExperienceLevel { beginner, intermediate, experienced }
+enum CalorieIntake { deficit, maintenance, surplus }
+enum BodyType { ectomorph, mesomorph, endomorph }
+
+// ─────────────────────────────────────────────
+//  BodyMetrics
+// ─────────────────────────────────────────────
+
+class BodyMetrics {
+  final double weightKg;
+  final double heightCm;
+
+  const BodyMetrics({required this.weightKg, required this.heightCm});
+
+  double get bmi {
+    final heightM = heightCm / 100.0;
+    return weightKg / (heightM * heightM);
+  }
+
+  BodyType get bodyType {
+    final b = bmi;
+    if (b < 18.5) return BodyType.ectomorph;
+    if (b < 25.0) return BodyType.mesomorph;
+    return BodyType.endomorph;
+  }
+
+  CalorieIntake get recommendedCalorieIntake {
+    switch (bodyType) {
+      case BodyType.ectomorph: return CalorieIntake.surplus;
+      case BodyType.mesomorph: return CalorieIntake.maintenance;
+      case BodyType.endomorph: return CalorieIntake.deficit;
+    }
+  }
+
+  String get bodyTypeLabel {
+    switch (bodyType) {
+      case BodyType.ectomorph: return 'Ectomorph';
+      case BodyType.mesomorph: return 'Mesomorph';
+      case BodyType.endomorph: return 'Endomorph';
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'weightKg': weightKg,
+    'heightCm': heightCm,
+  };
+
+  factory BodyMetrics.fromJson(Map<String, dynamic> j) => BodyMetrics(
+    weightKg: (j['weightKg'] as num).toDouble(),
+    heightCm: (j['heightCm'] as num).toDouble(),
+  );
+}
+
+// ─────────────────────────────────────────────
+//  UserProfile
+// ─────────────────────────────────────────────
+
+class UserProfile {
+  final String name;
+  final AgeGroup ageGroup;
+  final ExperienceLevel experienceLevel;
+  final BodyMetrics metrics;
+  final CalorieIntake calorieIntake;
+
+  const UserProfile({
+    required this.name,
+    required this.ageGroup,
+    required this.experienceLevel,
+    required this.metrics,
+    required this.calorieIntake,
+  });
+
+  BodyType get bodyType => metrics.bodyType;
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'ageGroup': ageGroup.index,
+    'experienceLevel': experienceLevel.index,
+    'metrics': metrics.toJson(),
+    'calorieIntake': calorieIntake.index,
+  };
+
+  factory UserProfile.fromJson(Map<String, dynamic> j) => UserProfile(
+    name: j['name'],
+    ageGroup: AgeGroup.values[j['ageGroup']],
+    experienceLevel: ExperienceLevel.values[j['experienceLevel']],
+    metrics: BodyMetrics.fromJson(j['metrics']),
+    calorieIntake: CalorieIntake.values[j['calorieIntake']],
+  );
+}
+
+// ─────────────────────────────────────────────
+//  DayWorkout
+// ─────────────────────────────────────────────
+
+class DayWorkout {
+  final bool isRest;
+  final bool isRecreational;
+  final bool isUnavailable; // user-marked: grayed out, workout moved elsewhere
+  final bool isCompleted;   // user finished all steps of this training day
+  final int warmupSeconds;
+  final int runSeconds;
+  final int walkSeconds;
+  final int sets;
+  final int cooldownSeconds;
+
+  const DayWorkout({
+    this.isRest = false,
+    this.isRecreational = false,
+    this.isUnavailable = false,
+    this.isCompleted = false,
+    this.warmupSeconds = 300,
+    required this.runSeconds,
+    this.walkSeconds = 120,
+    required this.sets,
+    this.cooldownSeconds = 300,
+  });
+
+  String get runDisplay {
+    final m = runSeconds ~/ 60;
+    final s = runSeconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  String get walkDisplay     => '2:00';
+  String get warmupDisplay   => '5:00';
+  String get cooldownDisplay => '5:00';
+
+  List<String> get exerciseList {
+    if (isUnavailable)  return ['Unavailable – workout moved to another day'];
+    if (isRecreational) return ['Rest or light recreational activity (walk, stretching, yoga)'];
+    if (isRest)         return ['Rest Day – recover and hydrate'];
+    return [
+      'Warm-up: 5:00 easy jog',
+      for (int i = 1; i <= sets; i++) ...[
+        'Set $i – Run: $runDisplay at training pace',
+        if (i < sets) 'Set $i – Walk: $walkDisplay recovery',
+      ],
+      'Cool-down: 5:00 easy jog',
+      'Stretching: 5–10 min',
+    ];
+  }
+
+  Map<String, dynamic> toJson() => {
+    'isRest': isRest,
+    'isRecreational': isRecreational,
+    'isUnavailable': isUnavailable,
+    'isCompleted': isCompleted,
+    'warmupSeconds': warmupSeconds,
+    'runSeconds': runSeconds,
+    'walkSeconds': walkSeconds,
+    'sets': sets,
+    'cooldownSeconds': cooldownSeconds,
+  };
+
+  factory DayWorkout.fromJson(Map<String, dynamic> j) => DayWorkout(
+    isRest: j['isRest'],
+    isRecreational: j['isRecreational'] ?? false,
+    isUnavailable: j['isUnavailable'] ?? false,
+    isCompleted: j['isCompleted'] ?? false,
+    warmupSeconds: j['warmupSeconds'],
+    runSeconds: j['runSeconds'],
+    walkSeconds: j['walkSeconds'],
+    sets: j['sets'],
+    cooldownSeconds: j['cooldownSeconds'],
+  );
+
+  static DayWorkout rest()         => const DayWorkout(isRest: true, runSeconds: 0, sets: 0);
+  static DayWorkout recreational() => const DayWorkout(isRest: true, isRecreational: true, runSeconds: 0, sets: 0);
+  static DayWorkout unavailable()  => const DayWorkout(isUnavailable: true, isRest: false, runSeconds: 0, sets: 0);
+
+  DayWorkout copyWith({bool? isUnavailable, bool? isCompleted, int? runSeconds, int? sets}) => DayWorkout(
+    isRest:         isRest,
+    isRecreational: isRecreational,
+    isUnavailable:  isUnavailable ?? this.isUnavailable,
+    isCompleted:    isCompleted   ?? this.isCompleted,
+    warmupSeconds:  warmupSeconds,
+    runSeconds:     runSeconds    ?? this.runSeconds,
+    walkSeconds:    walkSeconds,
+    sets:           sets          ?? this.sets,
+    cooldownSeconds: cooldownSeconds,
+  );
+}
+
+// ─────────────────────────────────────────────
+//  TrainingPlan — now has a unique id
+// ─────────────────────────────────────────────
+
+class TrainingPlan {
+  final String id;           // unique — used for storage & selection
+  final UserProfile profile;
+  final DateTime startDate;
+  final double tim;
+  final Map<String, DayWorkout> workouts;
+
+  const TrainingPlan({
+    required this.id,
+    required this.profile,
+    required this.startDate,
+    required this.tim,
+    required this.workouts,
+  });
+
+  DayWorkout? getWorkoutForDate(DateTime date) => workouts[_dateKey(date)];
+
+  /// Human-readable label shown in the plan list
+  String get displayName => profile.name;
+
+  String get summaryLine {
+    final d = startDate;
+    return 'Started ${d.day}/${d.month}/${d.year}  •  TIM ${tim.toStringAsFixed(2)}';
+  }
+
+  static String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'profile': profile.toJson(),
+    'startDate': startDate.toIso8601String(),
+    'tim': tim,
+    'workouts': workouts.map((k, v) => MapEntry(k, v.toJson())),
+  };
+
+  factory TrainingPlan.fromJson(Map<String, dynamic> j) => TrainingPlan(
+    id: j['id'] as String,
+    profile: UserProfile.fromJson(j['profile']),
+    startDate: DateTime.parse(j['startDate']),
+    tim: (j['tim'] as num).toDouble(),
+    workouts: (j['workouts'] as Map<String, dynamic>)
+        .map((k, v) => MapEntry(k, DayWorkout.fromJson(v as Map<String, dynamic>))),
+  );
+
+  String toJsonString()                        => jsonEncode(toJson());
+  static TrainingPlan fromJsonString(String s) => TrainingPlan.fromJson(jsonDecode(s));
+}
+
+// ─────────────────────────────────────────────
+//  TrainingPlanGenerator
+// ─────────────────────────────────────────────
+
+class TrainingPlanGenerator {
+  static const int _maxSetIncrease = 2;
+
+  static double _ageFactor(AgeGroup a) =>
+      a == AgeGroup.teen ? 1.30 : a == AgeGroup.adult ? 1.00 : 0.65;
+
+  static double _expFactor(ExperienceLevel e) =>
+      e == ExperienceLevel.beginner ? 0.70 : e == ExperienceLevel.intermediate ? 1.00 : 1.25;
+
+  static double _calFactor(CalorieIntake c) =>
+      c == CalorieIntake.deficit ? 0.80 : c == CalorieIntake.maintenance ? 1.00 : 1.20;
+
+  static double _bodyFactor(BodyType b) =>
+      b == BodyType.ectomorph ? 1.15 : b == BodyType.mesomorph ? 1.00 : 0.90;
+
+  static double computeTIM(UserProfile p) {
+    final raw = (_ageFactor(p.ageGroup)       * 0.40) +
+        (_expFactor(p.experienceLevel) * 0.30) +
+        (_calFactor(p.calorieIntake)   * 0.20) +
+        (_bodyFactor(p.bodyType)        * 0.10);
+    return raw.clamp(0.65, 1.45);
+  }
+
+  static int _adjustedRun(int baseSeconds, double tim) {
+    final adjustment = ((tim - 1.0) * 120).clamp(-60.0, 60.0);
+    return (((baseSeconds + adjustment) / 10).ceil() * 10).toInt();
+  }
+
+  static int _adjustedSets(int baseSets, double tim) {
+    final sam = ((tim - 1.0) * _maxSetIncrease).floor();
+    return (baseSets + sam).clamp(baseSets, baseSets + _maxSetIncrease);
+  }
+
+  static String _generateId() {
+    final now    = DateTime.now();
+    final random = Random().nextInt(9999).toString().padLeft(4, '0');
+    return '${now.millisecondsSinceEpoch}_$random';
+  }
+
+  static TrainingPlan generate(UserProfile profile, DateTime startDate) {
+    final tim      = computeTIM(profile);
+    final workouts = <String, DayWorkout>{};
+
+    // Pattern repeats every 7 days regardless of which weekday startDate falls on:
+    // Day 0 → Train (short)   runBase=60s  sets=6
+    // Day 1 → Rest
+    // Day 2 → Train (medium)  runBase=90s  sets=5
+    // Day 3 → Rest
+    // Day 4 → Train (long)    runBase=120s sets=6
+    // Day 5 → Rest
+    // Day 6 → Recreational (light rest)
+    const patternRun  = {0: 60,  2: 90,  4: 120};
+    const patternSets = {0: 6,   2: 5,   4: 6};
+
+    for (int i = 0; i < 28; i++) {
+      final date       = startDate.add(Duration(days: i));
+      final dayInCycle = i % 7;
+      final key        = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+
+      if (patternRun.containsKey(dayInCycle)) {
+        workouts[key] = DayWorkout(
+          runSeconds: _adjustedRun(patternRun[dayInCycle]!, tim),
+          sets:       _adjustedSets(patternSets[dayInCycle]!, tim),
+        );
+      } else if (dayInCycle == 6) {
+        workouts[key] = DayWorkout.recreational();
+      } else {
+        workouts[key] = DayWorkout.rest();
+      }
+    }
+
+    return TrainingPlan(
+      id:        _generateId(),
+      profile:   profile,
+      startDate: startDate,
+      tim:       tim,
+      workouts:  workouts,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  UnavailableScheduler
+//
+//  Scenarios:
+//  A) Mon unavailable:
+//     Mon→Tue(train), Wed forced rest, Wed workout
+//     cascades→Thu(train), Fri forced rest, Fri
+//     workout cascades→Sat(train), Sun forced rest.
+//
+//  B) Mon+Tue+Wed unavailable:
+//     Mon→Thu(train), Fri forced rest, Wed workout
+//     cascades→Sat(train), Sun forced rest, Fri
+//     workout cascades→Mon+1(train), Tue+1 rest.
+//     Plan extends beyond 28 days as needed.
+//
+//  Core rules:
+//  • Every placed training session reserves the
+//    NEXT day as a forced rest slot.
+//  • A day can only be a training landing target
+//    if it is NOT occupied AND NOT a forced rest
+//    slot of an already-placed session.
+//  • If the day AFTER the chosen target is already
+//    occupied by training, that training is bumped
+//    forward (cascade) before we finalize.
+//  • Search is FORWARD ONLY from the original date.
+//  • Plan extends past 28 days if needed.
+// ─────────────────────────────────────────────
+
+class UnavailableScheduler {
+  static String _key(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  static Map<String, DayWorkout> reschedule(
+      Map<String, DayWorkout> base,
+      Set<String> unavailableKeys,
+      ) {
+    final result    = Map<String, DayWorkout>.from(base);
+    final baseDates = base.keys.map(DateTime.parse).toList()..sort();
+
+    // ── Step 1: Collect displaced workouts in chronological order ──
+    final queue = <({DateTime origin, DayWorkout workout})>[];
+
+    for (final date in baseDates) {
+      final k = _key(date);
+      if (unavailableKeys.contains(k)) {
+        final w = base[k]!;
+        if (!w.isRest) {
+          queue.add((origin: date, workout: w));
+          result[k] = DayWorkout.unavailable();
+        }
+      }
+    }
+
+    if (queue.isEmpty) return result;
+
+    // ── Step 2: Build initial occupied + restAfter sets ──
+    // occupied  = days with a confirmed training session
+    // restAfter = day immediately after each occupied day;
+    //             cannot receive a training session
+    final occupied  = <String>{};
+    final restAfter = <String>{};
+
+    for (final date in baseDates) {
+      final k = _key(date);
+      final w = result[k]!;
+      if (!w.isRest && !w.isUnavailable) {
+        occupied.add(k);
+        restAfter.add(_key(date.add(const Duration(days: 1))));
+      }
+    }
+
+    // ── Step 3: Place each displaced workout forward-only ──
+    final mutableQueue = List.of(queue);
+
+    while (mutableQueue.isNotEmpty) {
+      final item    = mutableQueue.removeAt(0);
+      final origin  = item.origin;
+      final workout = item.workout;
+
+      // Find nearest forward day that is neither occupied,
+      // a forced rest slot, nor marked unavailable.
+      DateTime? target;
+      for (int offset = 1; offset <= 90 && target == null; offset++) {
+        final candidate = origin.add(Duration(days: offset));
+        final ck        = _key(candidate);
+
+        if (unavailableKeys.contains(ck)) continue;
+        if (occupied.contains(ck))        continue;
+        if (restAfter.contains(ck))       continue;
+
+        target = candidate;
+      }
+
+      if (target == null) continue; // extremely unlikely
+
+      final tk      = _key(target);
+      final nextDay = target.add(const Duration(days: 1));
+      final nk      = _key(nextDay);
+
+      // If the day after target is already a training session,
+      // it must be bumped forward to make room for the rest day.
+      if (occupied.contains(nk)) {
+        final bumpedWorkout = result[nk];
+        if (bumpedWorkout != null && !bumpedWorkout.isRest) {
+          mutableQueue.insert(0, (origin: nextDay, workout: bumpedWorkout));
+          occupied.remove(nk);
+          restAfter.remove(_key(nextDay.add(const Duration(days: 1))));
+          result[nk] = DayWorkout.rest();
+        }
+      }
+
+      // Place the workout on target
+      result.putIfAbsent(tk, () => DayWorkout.rest());
+      result[tk] = DayWorkout(
+        runSeconds:      workout.runSeconds,
+        sets:            workout.sets,
+        warmupSeconds:   workout.warmupSeconds,
+        walkSeconds:     workout.walkSeconds,
+        cooldownSeconds: workout.cooldownSeconds,
+      );
+      occupied.add(tk);
+
+      // Reserve next day as rest
+      restAfter.add(nk);
+      result.putIfAbsent(nk, () => DayWorkout.rest());
+      if (!result[nk]!.isUnavailable && !occupied.contains(nk)) {
+        result[nk] = DayWorkout.rest();
+      }
+    }
+
+    return result;
+  }
+}
