@@ -333,6 +333,13 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     }
   }
 
+  // ── Reset tap → restart timer from full duration ──
+  void _onResetTap(int i) {
+    if (_activeIndex != i && !(_isPaused && _activeIndex == i)) return;
+    _startTimer(i); // _startTimer cancels the current ticker and restarts fresh
+    _saveProgress();
+  }
+
   // ── Persist completion ────────────────────────
   Future<void> _saveCompletion() async {
     final dateKey =
@@ -494,6 +501,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
                       remaining:   isTiming ? _remaining : step.timerSeconds,
                       onBodyTap:   () => _onBodyTap(i),
                       onCheckTap:  () => _onCheckTap(i),
+                      onResetTap:  () => _onResetTap(i),
                     ),
                   ],
                 );
@@ -571,6 +579,7 @@ class _StepTile extends StatelessWidget {
   final int          remaining;   // seconds to display (full duration if idle)
   final VoidCallback onBodyTap;   // start / pause / resume
   final VoidCallback onCheckTap;  // manual check / uncheck
+  final VoidCallback onResetTap;  // reset timer back to full duration
 
   const _StepTile({
     required this.step,
@@ -581,6 +590,7 @@ class _StepTile extends StatelessWidget {
     required this.remaining,
     required this.onBodyTap,
     required this.onCheckTap,
+    required this.onResetTap,
   });
 
   Color get _bg {
@@ -690,6 +700,33 @@ class _StepTile extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
+                ],
+
+                // ── Reset button (only while timing or paused) ──
+                if ((isTiming || isPaused) && !isChecked) ...[
+                  GestureDetector(
+                    onTap: onResetTap,
+                    behavior: HitTestBehavior.opaque,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 26,
+                      height: 26,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white38,
+                          width: 2,
+                        ),
+                      ),
+                      child: const Icon(
+                        Icons.replay_rounded,
+                        size: 14,
+                        color: Colors.white54,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                 ],
 
                 // ── Checkbox (separate tap zone) ───

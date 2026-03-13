@@ -5,7 +5,7 @@ import 'reset_password.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
 import 'create_training_plan_screen.dart';
-import 'select_training_plan_screen.dart';
+import 'select_training_plan_screen.dart' hide WorkoutSessionScreen;
 import 'workout_session_screen.dart';
 
 class HomePage extends StatefulWidget {
@@ -324,9 +324,20 @@ void _showTrainingPlanOptions(
                 icon: Icons.edit_outlined,
                 title: 'Modify Training Plan',
                 subtitle: 'Edit your existing plan',
-                onTap: () {
-                  Navigator.pop(context);
-                  // TODO: Navigate to Modify Training Plan page
+                onTap: () async {
+                  Navigator.pop(context); // close the dialog
+                  final plan = await PlanStorage.loadActive();
+                  if (plan == null || !context.mounted) return;
+                  final updated = await Navigator.push<TrainingPlan?>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SelectTrainingPlanScreen(
+                        activePlanId:     plan.id,
+                        autoModifyPlanId: plan.id,
+                      ),
+                    ),
+                  );
+                  if (updated != null) onPlanUpdated(updated);
                 },
               ),
               const SizedBox(height: 20),

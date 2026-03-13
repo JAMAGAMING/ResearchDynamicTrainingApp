@@ -9,7 +9,17 @@ import 'plan_storage.dart';
 class SelectTrainingPlanScreen extends StatefulWidget {
   final String? activePlanId;
 
-  const SelectTrainingPlanScreen({super.key, this.activePlanId});
+  /// When set, the modify bottom sheet for this plan id is opened
+  /// automatically once the screen has loaded. Used by the homepage
+  /// "Modify Training Plan" button to jump straight into modifying
+  /// the active plan without any extra taps.
+  final String? autoModifyPlanId;
+
+  const SelectTrainingPlanScreen({
+    super.key,
+    this.activePlanId,
+    this.autoModifyPlanId,
+  });
 
   @override
   State<SelectTrainingPlanScreen> createState() =>
@@ -26,7 +36,17 @@ class _SelectTrainingPlanScreenState
   void initState() {
     super.initState();
     _activeId = widget.activePlanId;
-    _loadPlans();
+    _loadPlans().then((_) {
+      // If launched from "Modify Training Plan", pop open the modify sheet
+      // automatically for the requested plan once the list has loaded.
+      if (widget.autoModifyPlanId != null && mounted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final target = _plans.where(
+                  (p) => p.id == widget.autoModifyPlanId).firstOrNull;
+          if (target != null && mounted) _showModifyOptions(target);
+        });
+      }
+    });
   }
 
   Future<void> _loadPlans() async {
