@@ -910,34 +910,40 @@ class _EditSpecificDaysDialogState
     Navigator.pop(context, updated);
   }
 
-  /// Reconstruct the "clean" base workouts (no unavailable flags, no
-  /// previously moved workouts) so rescheduling is always idempotent.
   /// Live preview of the rescheduled plan given current _unavailable selection.
   Map<String, DayWorkout> _preview() =>
       UnavailableScheduler.reschedule(_baseWorkouts(), _unavailable);
 
-  /// Returns the "clean" base for rescheduling:
-  /// - Unavailable days are reset to rest/recreational
-  /// - All other days keep their current workout (including
-  ///   previously moved training sessions on non-Mon/Wed/Fri days)
-  /// - This makes the function idempotent: marking then un-marking
-  ///   a day always produces the same result
+  /// Returns the "clean" base for rescheduling.
+  ///
+  /// Always regenerates the original 28-day schedule from scratch using
+  /// [TrainingPlanGenerator.generate], so every call starts from the same
+  /// pristine workouts with correct runSeconds/sets/etc. — regardless of
+  /// how many times the plan has been rescheduled before.
+  ///
+  /// Only [isCompleted] flags are carried over from the live plan so that
+  /// finished training days are not lost.
   Map<String, DayWorkout> _baseWorkouts() {
-    final base = <String, DayWorkout>{};
+    // 1. Regenerate the original clean plan (correct stats, no moves/flags).
+    final original = TrainingPlanGenerator.generate(
+      widget.plan.profile,
+      widget.plan.startDate,
+    ).workouts;
 
+    // 2. Build a lookup of isCompleted flags from the current live plan,
+    //    keyed by date string so we can reapply them below.
+    final completedKeys = <String>{};
     for (final e in widget.plan.workouts.entries) {
-      final date = DateTime.parse(e.key);
+      if (e.value.isCompleted) completedKeys.add(e.key);
+    }
 
-      if (_unavailable.contains(e.key)) {
-        // Always keep user-marked unavailable days unavailable
-        base[e.key] = DayWorkout.unavailable();
-      } else if (e.value.isUnavailable) {
-        // Previously unavailable days also stay unavailable
-        base[e.key] = DayWorkout.unavailable();
-      } else {
-        // Keep everything else unchanged
-        base[e.key] = e.value;
-      }
+    // 3. Overlay isCompleted onto the regenerated workouts.
+    final base = <String, DayWorkout>{};
+    for (final e in original.entries) {
+      final w = e.value;
+      base[e.key] = completedKeys.contains(e.key)
+          ? w.copyWith(isCompleted: true)
+          : w;
     }
 
     return base;
@@ -992,7 +998,7 @@ class _EditSpecificDaysDialogState
                               color: Colors.black)),
                       SizedBox(height: 3),
                       Text(
-                        'Tap a training day to mark it unavailable. Its workout moves to the nearest free day.',
+                        'Tap a training day to mark it unavailable. Its workout moves to the next free day.',
                         style: TextStyle(fontSize: 11, color: Colors.black45),
                       ),
                     ],

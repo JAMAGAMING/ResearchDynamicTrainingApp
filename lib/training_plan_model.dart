@@ -331,19 +331,7 @@ class TrainingPlanGenerator {
 // ─────────────────────────────────────────────
 //  UnavailableScheduler
 //
-//  Scenarios:
-//  A) Mon unavailable:
-//     Mon→Tue(train), Wed forced rest, Wed workout
-//     cascades→Thu(train), Fri forced rest, Fri
-//     workout cascades→Sat(train), Sun forced rest.
-//
-//  B) Mon+Tue+Wed unavailable:
-//     Mon→Thu(train), Fri forced rest, Wed workout
-//     cascades→Sat(train), Sun forced rest, Fri
-//     workout cascades→Mon+1(train), Tue+1 rest.
-//     Plan extends beyond 28 days as needed.
-//
-//  Core rules:
+//  Core placement rules:
 //  • Every placed training session reserves the
 //    NEXT day as a forced rest slot.
 //  • A day can only be a training landing target
@@ -354,6 +342,25 @@ class TrainingPlanGenerator {
 //    forward (cascade) before we finalize.
 //  • Search is FORWARD ONLY from the original date.
 //  • Plan extends past 28 days if needed.
+//
+//  Recreational rule:
+//  • Training sessions are counted in groups of 3.
+//  • After every COMPLETE uninterrupted group of 3
+//    training days, a recreational day is inserted
+//    immediately after the trailing rest day.
+//  • "Uninterrupted" means no unavailable day falls
+//    within that group of 3.
+//  • A broken group resets the counter — the next
+//    recreational day only comes after the next
+//    clean group of 3 completes.
+//
+//  Pattern examples:
+//  Normal:
+//    T→rest→T→rest→T→rest→recreational
+//  1 unavailable (group broken):
+//    X→T→rest→X→T→rest→T→rest→T→rest→recreational
+//  3 unavailable:
+//    X→X→X→T→rest→X→T→rest→T→rest→T→rest→recreational
 // ─────────────────────────────────────────────
 
 class UnavailableScheduler {
@@ -374,19 +381,14 @@ class UnavailableScheduler {
       final k = _key(date);
       if (unavailableKeys.contains(k)) {
         final w = base[k]!;
-        if (!w.isRest) {
+        if (!w.isRest && !w.isUnavailable) {
           queue.add((origin: date, workout: w));
-          result[k] = DayWorkout.unavailable();
         }
+        result[k] = DayWorkout.unavailable();
       }
     }
 
-    if (queue.isEmpty) return result;
-
     // ── Step 2: Build initial occupied + restAfter sets ──
-    // occupied  = days with a confirmed training session
-    // restAfter = day immediately after each occupied day;
-    //             cannot receive a training session
     final occupied  = <String>{};
     final restAfter = <String>{};
 
@@ -407,8 +409,6 @@ class UnavailableScheduler {
       final origin  = item.origin;
       final workout = item.workout;
 
-      // Find nearest forward day that is neither occupied,
-      // a forced rest slot, nor marked unavailable.
       DateTime? target;
       for (int offset = 1; offset <= 90 && target == null; offset++) {
         final candidate = origin.add(Duration(days: offset));
@@ -421,17 +421,19 @@ class UnavailableScheduler {
         target = candidate;
       }
 
-      if (target == null) continue; // extremely unlikely
+      if (target == null) continue;
 
       final tk      = _key(target);
       final nextDay = target.add(const Duration(days: 1));
       final nk      = _key(nextDay);
 
       // If the day after target is already a training session,
-      // it must be bumped forward to make room for the rest day.
+      // bump it forward. Use base[nk] to avoid reading a mutated entry.
       if (occupied.contains(nk)) {
-        final bumpedWorkout = result[nk];
-        if (bumpedWorkout != null && !bumpedWorkout.isRest) {
+        final bumpedWorkout = base[nk] ?? result[nk];
+        if (bumpedWorkout != null &&
+            !bumpedWorkout.isRest &&
+            !bumpedWorkout.isUnavailable) {
           mutableQueue.insert(0, (origin: nextDay, workout: bumpedWorkout));
           occupied.remove(nk);
           restAfter.remove(_key(nextDay.add(const Duration(days: 1))));
@@ -439,22 +441,75 @@ class UnavailableScheduler {
         }
       }
 
-      // Place the workout on target
-      result.putIfAbsent(tk, () => DayWorkout.rest());
+      // Place the workout, preserving all fields including isCompleted.
       result[tk] = DayWorkout(
         runSeconds:      workout.runSeconds,
         sets:            workout.sets,
         warmupSeconds:   workout.warmupSeconds,
         walkSeconds:     workout.walkSeconds,
         cooldownSeconds: workout.cooldownSeconds,
+        isCompleted:     workout.isCompleted,
       );
       occupied.add(tk);
 
-      // Reserve next day as rest
       restAfter.add(nk);
       result.putIfAbsent(nk, () => DayWorkout.rest());
       if (!result[nk]!.isUnavailable && !occupied.contains(nk)) {
         result[nk] = DayWorkout.rest();
+      }
+    }
+
+    // ── Step 4: Recompute recreational days ──────────────────────────────
+    //
+    // Strip all existing recreational markers — we recompute from scratch.
+    for (final k in result.keys.toList()) {
+      if (result[k]!.isRecreational) result[k] = DayWorkout.rest();
+    }
+
+    // Walk the full sorted timeline. Count training days in groups of 3.
+    // A group is "clean" if no unavailable day appeared within it (between
+    // the start of that group and the 3rd training day, inclusive).
+    // After a clean group of 3, the day two slots after the 3rd training day
+    // (i.e. rest-day + 1) becomes recreational.
+    // An unavailable day taints the current group, resetting cleanness but
+    // NOT the counter — the counter resets only when a group of 3 completes.
+    final allDates      = result.keys.map(DateTime.parse).toList()..sort();
+    int  trainingCount  = 0; // within current group of 3
+    bool groupClean     = true;
+
+    for (int i = 0; i < allDates.length; i++) {
+      final date = allDates[i];
+      final k    = _key(date);
+      final w    = result[k]!;
+
+      if (w.isUnavailable) {
+        groupClean = false;
+        continue;
+      }
+
+      if (w.isRest) continue;
+
+      // Training day.
+      trainingCount++;
+
+      if (trainingCount == 3) {
+        if (groupClean) {
+          // Recreational slot = training day + 2 (skip the mandatory rest day).
+          final recDate = date.add(const Duration(days: 2));
+          final rek     = _key(recDate);
+
+          // Only mark recreational if the slot is a plain rest day
+          // (not a training session or unavailable).
+          result.putIfAbsent(rek, () => DayWorkout.rest());
+          final slot = result[rek]!;
+          if (slot.isRest && !slot.isUnavailable && !occupied.contains(rek)) {
+            result[rek] = DayWorkout.recreational();
+          }
+        }
+
+        // Reset for the next group.
+        trainingCount = 0;
+        groupClean    = true;
       }
     }
 
