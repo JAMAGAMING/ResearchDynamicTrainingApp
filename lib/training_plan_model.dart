@@ -112,6 +112,13 @@ class DayWorkout {
   final int sets;
   final int cooldownSeconds;
 
+  /// Which training slot this day belongs to:
+  ///   0 = short run  (min 30s)
+  ///   1 = medium run (min 60s)
+  ///   2 = long run   (min 90s)
+  ///  -1 = not a training day (rest / recreational / unavailable)
+  final int slotIndex;
+
   const DayWorkout({
     this.isRest = false,
     this.isRecreational = false,
@@ -122,7 +129,20 @@ class DayWorkout {
     this.walkSeconds = 120,
     required this.sets,
     this.cooldownSeconds = 300,
+    this.slotIndex = -1,
   });
+
+  /// Minimum run seconds enforced for each slot.
+  static const slotMinSeconds = [30, 60, 90];
+
+  /// Returns the minimum run duration for this day's slot,
+  /// or 30 as a safe fallback for unknown training days.
+  int get minRunSeconds {
+    if (slotIndex >= 0 && slotIndex < slotMinSeconds.length) {
+      return slotMinSeconds[slotIndex];
+    }
+    return 30;
+  }
 
   String get runDisplay {
     final m = runSeconds ~/ 60;
@@ -159,6 +179,7 @@ class DayWorkout {
     'walkSeconds': walkSeconds,
     'sets': sets,
     'cooldownSeconds': cooldownSeconds,
+    'slotIndex': slotIndex,
   };
 
   factory DayWorkout.fromJson(Map<String, dynamic> j) => DayWorkout(
@@ -171,6 +192,7 @@ class DayWorkout {
     walkSeconds: j['walkSeconds'],
     sets: j['sets'],
     cooldownSeconds: j['cooldownSeconds'],
+    slotIndex: (j['slotIndex'] as int?) ?? -1,
   );
 
   static DayWorkout rest()         => const DayWorkout(isRest: true, runSeconds: 0, sets: 0);
@@ -187,6 +209,7 @@ class DayWorkout {
     walkSeconds:    walkSeconds,
     sets:           sets          ?? this.sets,
     cooldownSeconds: cooldownSeconds,
+    slotIndex:      slotIndex,
   );
 }
 
@@ -303,8 +326,9 @@ class TrainingPlan {
       const fallbackSets = [6, 5, 6];
       final idx = templates.length;
       templates.add(DayWorkout(
-        runSeconds: (fallbackRun[idx]  + intensityDeltaSeconds).clamp(10, 600),
+        runSeconds: (fallbackRun[idx]  + intensityDeltaSeconds).clamp(30, 600),
         sets:       (fallbackSets[idx] + setsDelta).clamp(1, 12),
+        slotIndex:  idx,
       ));
     }
 
@@ -327,6 +351,7 @@ class TrainingPlan {
           warmupSeconds:   t.warmupSeconds,
           walkSeconds:     t.walkSeconds,
           cooldownSeconds: t.cooldownSeconds,
+          slotIndex:       t.slotIndex,
           // isCompleted defaults to false — new days are not done yet
         );
       } else if (dayInCycle == 6) {
@@ -406,6 +431,9 @@ class TrainingPlanGenerator {
     const patternRun  = {0: 60,  2: 90,  4: 120};
     const patternSets = {0: 6,   2: 5,   4: 6};
 
+    // Slot index by cycle position: 0→short(0), 2→medium(1), 4→long(2)
+    const patternSlot = {0: 0,   2: 1,   4: 2};
+
     for (int i = 0; i < 28; i++) {
       final date       = startDate.add(Duration(days: i));
       final dayInCycle = i % 7;
@@ -415,6 +443,7 @@ class TrainingPlanGenerator {
         workouts[key] = DayWorkout(
           runSeconds: _adjustedRun(patternRun[dayInCycle]!, tim),
           sets:       _adjustedSets(patternSets[dayInCycle]!, tim),
+          slotIndex:  patternSlot[dayInCycle]!,
         );
       } else if (dayInCycle == 6) {
         workouts[key] = DayWorkout.recreational();
@@ -546,7 +575,7 @@ class UnavailableScheduler {
         }
       }
 
-      // Place the workout, preserving all fields including isCompleted.
+      // Place the workout, preserving all fields including isCompleted and slotIndex.
       result[tk] = DayWorkout(
         runSeconds:      workout.runSeconds,
         sets:            workout.sets,
@@ -554,6 +583,7 @@ class UnavailableScheduler {
         walkSeconds:     workout.walkSeconds,
         cooldownSeconds: workout.cooldownSeconds,
         isCompleted:     workout.isCompleted,
+        slotIndex:       workout.slotIndex,
       );
       occupied.add(tk);
 

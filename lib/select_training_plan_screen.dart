@@ -559,35 +559,28 @@ class _AdjustIntensityDialogState
     extends State<_AdjustIntensityDialog> {
   static const _minSetsDelta = -5;
   static const _maxSetsDelta =  5;
-  static const _offsets = [-30, -20, -10, 0, 10, 20, 30];
+  static const _offsets = [-60, -30, -20, -10, 0, 10, 20, 30, 60];
 
-  late int _selectedOffset;
+  // Always starts at 0 (Original) — the current plan values ARE the baseline.
+  int  _selectedOffset = 0;
   late int _setsDelta;
-  bool     _saving = false;
+  bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-    _selectedOffset = widget.plan.intensityDeltaSeconds.clamp(-30, 30);
-    _selectedOffset = _offsets.reduce((a, b) =>
-    (a - _selectedOffset).abs() <= (b - _selectedOffset).abs() ? a : b);
+    // Offset always opens at 0: whatever is in the plan right now is "Original".
+    _selectedOffset = 0;
     _setsDelta = widget.plan.setsDelta.clamp(_minSetsDelta, _maxSetsDelta);
   }
 
   Future<void> _save() async {
     setState(() => _saving = true);
 
-    // The live plan's training days already have the previous delta baked in.
-    // To apply the NEW delta cleanly across ALL days (including extended ones),
-    // undo the old delta then apply the new one:
-    //   newRun  = (liveRun  - oldDelta    + newDelta).clamp(10, 600)
-    //   newSets = (liveSets - oldSetsDelta + newSetsDelta).clamp(1, 12)
-    //
-    // This is correct for both the original 28 days AND any extended days,
-    // without needing to regenerate or know how long the plan is.
-    final oldDelta    = widget.plan.intensityDeltaSeconds;
-    final oldSetsDelta = widget.plan.setsDelta;
-
+    // Apply the selected offset directly on top of the CURRENT live values.
+    // No rebasing against a generator baseline — the live values ARE the base.
+    // After saving, intensityDeltaSeconds is reset to 0 so the next time this
+    // dialog opens, "Original" again means the freshly saved values.
     final completedKeys = <String>{
       for (final e in widget.plan.workouts.entries)
         if (e.value.isCompleted) e.key,
@@ -597,19 +590,17 @@ class _AdjustIntensityDialogState
     for (final e in widget.plan.workouts.entries) {
       final w = e.value;
       if (!w.isRest && !w.isUnavailable && !w.isRecreational) {
-        // Training day — rebase to original then apply new delta.
-        final baseRun  = w.runSeconds  - oldDelta;
-        final baseSets = w.sets        - oldSetsDelta;
+        final minRun = w.minRunSeconds; // 30 / 60 / 90 based on slotIndex
         newWorkouts[e.key] = DayWorkout(
-          runSeconds:      (baseRun  + _selectedOffset).clamp(10, 600),
-          sets:            (baseSets + _setsDelta).clamp(1, 12),
+          runSeconds:      (w.runSeconds + _selectedOffset).clamp(minRun, 600),
+          sets:            (w.sets + _setsDelta).clamp(1, 12),
           warmupSeconds:   w.warmupSeconds,
           walkSeconds:     w.walkSeconds,
           cooldownSeconds: w.cooldownSeconds,
           isCompleted:     completedKeys.contains(e.key),
+          slotIndex:       w.slotIndex,
         );
       } else {
-        // Rest / recreational / unavailable — keep exactly as-is.
         newWorkouts[e.key] = w;
       }
     }
@@ -620,8 +611,8 @@ class _AdjustIntensityDialogState
       startDate:             widget.plan.startDate,
       tim:                   widget.plan.tim,
       workouts:              newWorkouts,
-      intensityDeltaSeconds: _selectedOffset,
-      setsDelta:             _setsDelta,
+      intensityDeltaSeconds: 0,   // reset — new values are the new baseline
+      setsDelta:             0,   // reset — new sets are the new baseline
     );
 
     await PlanStorage.save(updated);
@@ -1068,58 +1059,65 @@ class _EditSpecificDaysDialogState
 
   /// Returns the "clean" base for rescheduling.
   ///
-  /// For the original 28 days: regenerates from [TrainingPlanGenerator] and
-  /// applies the stored intensity/sets deltas, so the base is always pristine
-  /// regardless of previous rescheduling.
+  /// Since intensity adjustments are now committed directly into the workout
+  /// values (intensityDeltaSeconds is always 0 after any save), the live plan
+  /// values ARE the correct baseline for all days — both original and extended.
+  /// We only strip rescheduling side-effects (moved workouts, extra rest days
+  /// added outside the original positions) by rebuilding from the live values
+  /// but clearing any isUnavailable flags that aren't in the current selection.
   ///
-  /// For extended days (beyond day 28): kept directly from the live plan
-  /// because the generator doesn't know about them. Their runSeconds/sets
-  /// already reflect the stored deltas from when the plan was extended.
-  ///
-  /// Only [isCompleted] flags are carried over from the live plan.
+  /// Only [isCompleted] flags are preserved as-is.
   Map<String, DayWorkout> _baseWorkouts() {
-    // 1. Regenerate the clean original 28-day schedule.
-    final original = TrainingPlanGenerator.generate(
-      widget.plan.profile,
-      widget.plan.startDate,
-    ).workouts;
-
-    // 2. Collect completed keys and the cutoff date (end of original 28 days).
     final completedKeys = <String>{
       for (final e in widget.plan.workouts.entries)
         if (e.value.isCompleted) e.key,
     };
 
-    final originalDates   = original.keys.map(DateTime.parse).toList()..sort();
-    final cutoffDate      = originalDates.last;
-    final deltaSeconds    = widget.plan.intensityDeltaSeconds;
-    final deltasets       = widget.plan.setsDelta;
+    // Regenerate the original 28-day structure to get the correct positional
+    // slots (which days are train/rest/recreational), then overlay the live
+    // plan's runSeconds/sets so adjusted values are preserved.
+    final original = TrainingPlanGenerator.generate(
+      widget.plan.profile,
+      widget.plan.startDate,
+    ).workouts;
+
+    // Build a lookup of live training stats keyed by date.
+    // We use the live plan's values for all training days.
+    final liveTraining = <String, DayWorkout>{
+      for (final e in widget.plan.workouts.entries)
+        if (!e.value.isRest && !e.value.isUnavailable && !e.value.isRecreational)
+          e.key: e.value,
+    };
+
+    // Cutoff = last day of the original 28.
+    final originalDates = original.keys.map(DateTime.parse).toList()..sort();
+    final cutoffDate    = originalDates.last;
 
     final base = <String, DayWorkout>{};
 
-    // 3. For original 28 days: regenerated values + apply stored deltas.
+    // Original 28 days: use live training stats where available (preserves
+    // intensity adjustments), fall back to generator values otherwise.
     for (final e in original.entries) {
-      final w = e.value;
-      DayWorkout adjusted;
-      if (!w.isRest && !w.isUnavailable) {
-        adjusted = DayWorkout(
-          runSeconds:      (w.runSeconds + deltaSeconds).clamp(10, 600),
-          sets:            (w.sets       + deltasets).clamp(1, 12),
-          warmupSeconds:   w.warmupSeconds,
-          walkSeconds:     w.walkSeconds,
-          cooldownSeconds: w.cooldownSeconds,
+      final w    = e.value;
+      final live = liveTraining[e.key];
+      if (!w.isRest && !w.isUnavailable && live != null) {
+        base[e.key] = DayWorkout(
+          runSeconds:      live.runSeconds,
+          sets:            live.sets,
+          warmupSeconds:   live.warmupSeconds,
+          walkSeconds:     live.walkSeconds,
+          cooldownSeconds: live.cooldownSeconds,
           isCompleted:     completedKeys.contains(e.key),
+          slotIndex:       live.slotIndex,
         );
       } else {
-        adjusted = completedKeys.contains(e.key)
+        base[e.key] = completedKeys.contains(e.key)
             ? w.copyWith(isCompleted: true)
             : w;
       }
-      base[e.key] = adjusted;
     }
 
-    // 4. For extended days (past the original 28): take directly from the
-    //    live plan — their stats already reflect the correct adjusted values.
+    // Extended days (past day 28): take directly from the live plan.
     for (final e in widget.plan.workouts.entries) {
       final date = DateTime.parse(e.key);
       if (date.isAfter(cutoffDate)) {
