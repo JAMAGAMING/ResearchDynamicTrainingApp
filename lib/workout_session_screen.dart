@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
 
@@ -35,6 +37,55 @@ import 'plan_storage.dart';
 //    flutter_ringtone_player: ^4.0.0
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+//  SessionProgress — persists mid-session state
+//
+//  Stored in SharedPreferences under the key:
+//    'session_progress_<yyyy-MM-dd>'
+//
+//  Fields saved:
+//    checkedSteps  → List<bool> — which steps are ticked
+//    activeIndex   → int?       — step whose timer was running
+//    remainingSeconds → int     — seconds left on that timer
+// ─────────────────────────────────────────────
+
+class SessionProgress {
+  static String _key(DateTime date) =>
+      'session_progress_${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+
+  static Future<void> save({
+    required DateTime    date,
+    required List<bool>  checkedSteps,
+    required int?        activeIndex,
+    required int         remainingSeconds,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final data  = jsonEncode({
+      'checkedSteps':     checkedSteps,
+      'activeIndex':      activeIndex,
+      'remainingSeconds': remainingSeconds,
+    });
+    await prefs.setString(_key(date), data);
+  }
+
+  /// Returns null if no saved progress exists for this date.
+  static Future<Map<String, dynamic>?> load(DateTime date) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw   = prefs.getString(_key(date));
+    if (raw == null) return null;
+    try {
+      return jsonDecode(raw) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> clear(DateTime date) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_key(date));
+  }
+}
+
 class WorkoutSessionScreen extends StatefulWidget {
   final DayWorkout workout;
   final DateTime   date;
@@ -64,12 +115,52 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     super.initState();
     _steps   = _buildSteps(widget.workout);
     _checked = List.filled(_steps.length, false);
+    _restoreProgress();
   }
 
   @override
   void dispose() {
+    // Save current progress when the user navigates away mid-session.
+    // The timer is already cancelled below — we just freeze _remaining
+    // so it can be restored next time.
     _ticker?.cancel();
+    _ticker = null;
+    if (!_checked.every((c) => c)) {
+      // Fire-and-forget: SharedPreferences.getInstance() is synchronous
+      // after the first call so this completes before the widget is gone.
+      SessionProgress.save(
+        date:             widget.date,
+        checkedSteps:     List.of(_checked),
+        activeIndex:      _activeIndex,
+        remainingSeconds: _remaining,
+      );
+    }
     super.dispose();
+  }
+
+  // ── Restore mid-session progress ──────────────
+  Future<void> _restoreProgress() async {
+    final saved = await SessionProgress.load(widget.date);
+    if (saved == null) return;
+
+    final steps    = (saved['checkedSteps'] as List<dynamic>).cast<bool>();
+    final active   = saved['activeIndex']      as int?;
+    final remaining = saved['remainingSeconds'] as int;
+
+    // Guard against step count mismatch (e.g. plan was edited).
+    if (steps.length != _checked.length) return;
+
+    if (!mounted) return;
+    setState(() {
+      for (int i = 0; i < steps.length; i++) _checked[i] = steps[i];
+      // Restore the timer in a paused state — the user must tap to resume.
+      // This is safer than auto-resuming a countdown they can't see.
+      if (active != null && active < _steps.length && remaining > 0) {
+        _activeIndex = active;
+        _remaining   = remaining;
+        _isPaused    = true; // always restore as paused
+      }
+    });
   }
 
   // ── Build flat sequential step list ──────────
@@ -125,6 +216,16 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   double get _progress  => _steps.isEmpty ? 0.0 : _doneCount / _steps.length;
 
   bool _canCheck(int i) => i == 0 || _checked[i - 1];
+
+  // ── Persist mid-session progress ─────────────
+  void _saveProgress() {
+    SessionProgress.save(
+      date:             widget.date,
+      checkedSteps:     List.of(_checked),
+      activeIndex:      _activeIndex,
+      remainingSeconds: _remaining,
+    );
+  }
 
   // ── Timer control ─────────────────────────────
 
@@ -183,7 +284,10 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       if (!isStretch) _checked[i] = true;
     });
 
+    _saveProgress();
+
     if (!isStretch && _allDone) {
+      SessionProgress.clear(widget.date); // no longer needed
       Future.delayed(const Duration(milliseconds: 350), _showCompletionDialog);
     }
   }
@@ -213,6 +317,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       setState(() {
         for (int j = i; j < _checked.length; j++) _checked[j] = false;
       });
+      _saveProgress();
       return;
     }
 
@@ -221,7 +326,10 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     setState(() => _checked[i] = true);
 
     if (_allDone) {
+      SessionProgress.clear(widget.date); // no longer needed
       Future.delayed(const Duration(milliseconds: 350), _showCompletionDialog);
+    } else {
+      _saveProgress();
     }
   }
 
