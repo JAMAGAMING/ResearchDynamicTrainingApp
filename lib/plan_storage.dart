@@ -7,21 +7,27 @@ import 'training_plan_model.dart';
 //  and tracks which one is currently active.
 //
 //  Keys used in SharedPreferences:
-//    'plans'       → JSON list of all saved plans
+//    'plans'          → JSON list of all saved plans
 //    'active_plan_id' → id of the currently selected plan
+//
+//  Note: all writes go through a single SharedPreferences
+//  instance obtained once per call to avoid the race
+//  condition where save() calls loadAll() separately,
+//  potentially reading stale data between two rapid saves.
 // ─────────────────────────────────────────────
 
 class PlanStorage {
   static const _plansKey    = 'plans';
   static const _activeIdKey = 'active_plan_id';
 
-  // ── Save a new plan (appends to list, sets as active) ──
+  // ── Save a plan (replaces if same id exists, appends otherwise) ──
 
   static Future<void> save(TrainingPlan plan) async {
+    // Obtain prefs once and pass it through so loadAll doesn't
+    // open a second instance that might read before this write lands.
     final prefs = await SharedPreferences.getInstance();
-    final plans = await loadAll();
+    final plans = _decodePlans(prefs.getString(_plansKey));
 
-    // Replace if same id exists, otherwise append
     final idx = plans.indexWhere((p) => p.id == plan.id);
     if (idx >= 0) {
       plans[idx] = plan;
@@ -37,14 +43,7 @@ class PlanStorage {
 
   static Future<List<TrainingPlan>> loadAll() async {
     final prefs = await SharedPreferences.getInstance();
-    final raw   = prefs.getString(_plansKey);
-    if (raw == null) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list.map((j) => TrainingPlan.fromJson(j as Map<String, dynamic>)).toList();
-    } catch (_) {
-      return [];
-    }
+    return _decodePlans(prefs.getString(_plansKey));
   }
 
   // ── Load the currently active plan ──
@@ -53,7 +52,7 @@ class PlanStorage {
     final prefs    = await SharedPreferences.getInstance();
     final activeId = prefs.getString(_activeIdKey);
     if (activeId == null) return null;
-    final plans = await loadAll();
+    final plans = _decodePlans(prefs.getString(_plansKey));
     try {
       return plans.firstWhere((p) => p.id == activeId);
     } catch (_) {
@@ -72,11 +71,10 @@ class PlanStorage {
 
   static Future<void> delete(String planId) async {
     final prefs  = await SharedPreferences.getInstance();
-    final plans  = await loadAll();
+    final plans  = _decodePlans(prefs.getString(_plansKey));
     plans.removeWhere((p) => p.id == planId);
     await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
 
-    // If deleted plan was active, switch to the last one (or clear)
     final activeId = prefs.getString(_activeIdKey);
     if (activeId == planId) {
       if (plans.isNotEmpty) {
@@ -93,5 +91,21 @@ class PlanStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_plansKey);
     await prefs.remove(_activeIdKey);
+  }
+
+  // ── Internal helper ──────────────────────────────────────────────────────
+  //  Decodes the raw JSON string into a list of TrainingPlans.
+  //  Returns an empty list on null input or any parse error.
+
+  static List<TrainingPlan> _decodePlans(String? raw) {
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .map((j) => TrainingPlan.fromJson(j as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 }

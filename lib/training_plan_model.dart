@@ -201,12 +201,22 @@ class TrainingPlan {
   final double tim;
   final Map<String, DayWorkout> workouts;
 
+  /// Cumulative seconds added/subtracted from every training day's runSeconds.
+  /// Applied on top of the generator's original values. Default 0.
+  final int intensityDeltaSeconds;
+
+  /// Cumulative sets added/subtracted from every training day.
+  /// Applied on top of the generator's original values. Default 0.
+  final int setsDelta;
+
   const TrainingPlan({
     required this.id,
     required this.profile,
     required this.startDate,
     required this.tim,
     required this.workouts,
+    this.intensityDeltaSeconds = 0,
+    this.setsDelta             = 0,
   });
 
   DayWorkout? getWorkoutForDate(DateTime date) => workouts[_dateKey(date)];
@@ -228,19 +238,114 @@ class TrainingPlan {
     'startDate': startDate.toIso8601String(),
     'tim': tim,
     'workouts': workouts.map((k, v) => MapEntry(k, v.toJson())),
+    'intensityDeltaSeconds': intensityDeltaSeconds,
+    'setsDelta':             setsDelta,
   };
 
   factory TrainingPlan.fromJson(Map<String, dynamic> j) => TrainingPlan(
-    id: j['id'] as String,
-    profile: UserProfile.fromJson(j['profile']),
-    startDate: DateTime.parse(j['startDate']),
-    tim: (j['tim'] as num).toDouble(),
-    workouts: (j['workouts'] as Map<String, dynamic>)
+    id:                     j['id'] as String,
+    profile:                UserProfile.fromJson(j['profile']),
+    startDate:              DateTime.parse(j['startDate']),
+    tim:                    (j['tim'] as num).toDouble(),
+    workouts:               (j['workouts'] as Map<String, dynamic>)
         .map((k, v) => MapEntry(k, DayWorkout.fromJson(v as Map<String, dynamic>))),
+    intensityDeltaSeconds:  (j['intensityDeltaSeconds'] as int?) ?? 0,
+    setsDelta:              (j['setsDelta']             as int?) ?? 0,
   );
 
   String toJsonString()                        => jsonEncode(toJson());
   static TrainingPlan fromJsonString(String s) => TrainingPlan.fromJson(jsonDecode(s));
+
+  // ─────────────────────────────────────────────
+  //  extendPlan
+  //
+  //  Appends 28 new days to this plan.
+  //
+  //  The extension starts the day AFTER the last
+  //  existing date in the workouts map.
+  //
+  //  Training templates are lifted directly from
+  //  the existing plan's workouts so any intensity
+  //  adjustments are automatically preserved.
+  //  The 7-day cycle is:
+  //    0 → short run  (same as existing day-0 template)
+  //    1 → rest
+  //    2 → medium run (same as existing day-2 template)
+  //    3 → rest
+  //    4 → long run   (same as existing day-4 template)
+  //    5 → rest
+  //    6 → recreational
+  //
+  //  None of the new days are marked completed.
+  // ─────────────────────────────────────────────
+
+  TrainingPlan extendPlan() {
+    // 1. Find the last date currently in the plan.
+    final sortedDates = workouts.keys.map(DateTime.parse).toList()..sort();
+    final lastDate    = sortedDates.last;
+
+    // 2. Extract the 3 training templates from existing workouts.
+    //    Walk from the start and grab the first 3 non-rest, non-recreational,
+    //    non-unavailable workouts — they are short / medium / long in order.
+    final templates = <DayWorkout>[];
+    for (final date in sortedDates) {
+      final w = workouts[_dateKey(date)]!;
+      if (!w.isRest && !w.isRecreational && !w.isUnavailable) {
+        templates.add(w);
+        if (templates.length == 3) break;
+      }
+    }
+
+    // Fallback: if somehow fewer than 3 found, fill from generator output
+    // using the stored deltas so intensity is still respected.
+    while (templates.length < 3) {
+      const fallbackRun  = [60, 90, 120];
+      const fallbackSets = [6, 5, 6];
+      final idx = templates.length;
+      templates.add(DayWorkout(
+        runSeconds: (fallbackRun[idx]  + intensityDeltaSeconds).clamp(10, 600),
+        sets:       (fallbackSets[idx] + setsDelta).clamp(1, 12),
+      ));
+    }
+
+    // Template index by cycle position:  0→short, 2→medium, 4→long
+    final templateBySlot = {0: templates[0], 2: templates[1], 4: templates[2]};
+
+    // 3. Stamp out 28 new days starting the day after lastDate.
+    final extended = Map<String, DayWorkout>.from(workouts);
+
+    for (int i = 0; i < 28; i++) {
+      final date       = lastDate.add(Duration(days: i + 1));
+      final dayInCycle = i % 7;
+      final key        = _dateKey(date);
+
+      if (templateBySlot.containsKey(dayInCycle)) {
+        final t = templateBySlot[dayInCycle]!;
+        extended[key] = DayWorkout(
+          runSeconds:      t.runSeconds,
+          sets:            t.sets,
+          warmupSeconds:   t.warmupSeconds,
+          walkSeconds:     t.walkSeconds,
+          cooldownSeconds: t.cooldownSeconds,
+          // isCompleted defaults to false — new days are not done yet
+        );
+      } else if (dayInCycle == 6) {
+        extended[key] = DayWorkout.recreational();
+      } else {
+        extended[key] = DayWorkout.rest();
+      }
+    }
+
+    return TrainingPlan(
+      id:                    id,
+      profile:               profile,
+      startDate:             startDate,
+      tim:                   tim,
+      workouts:              extended,
+      intensityDeltaSeconds: intensityDeltaSeconds,
+      setsDelta:             setsDelta,
+    );
+  }
 }
 
 // ─────────────────────────────────────────────
