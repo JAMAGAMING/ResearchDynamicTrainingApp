@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' show asin, cos, pi, sin, sqrt;
 import 'package:flutter/material.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
@@ -38,8 +40,27 @@ import 'plan_storage.dart';
 //  • Ticker fires every 10 ms for a ~2-decimal countdown (M:SS.cs).
 //  • SessionProgress persists centiseconds so resume is accurate.
 //
+//  GPS distance tracking:
+//  • Tracking is active ONLY during Run step countdowns (not paused,
+//    not walk/warmup/cooldown/stretch).
+//  • Uses geolocator's position stream; consecutive fixes are
+//    accumulated with the Haversine formula for accuracy.
+//  • Requires location permission (requested on screen open).
+//    If denied, session proceeds normally — km counter is unaffected.
+//  • Accumulated meters are flushed to PlanStorage on dispose so
+//    partial sessions are credited even if the user navigates away.
+//
 //  Dependencies (add to pubspec.yaml):
 //    flutter_ringtone_player: ^4.0.0
+//    geolocator: ^13.0.0
+//
+//  Android AndroidManifest.xml:
+//    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+//    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+//
+//  iOS Info.plist:
+//    <key>NSLocationWhenInUseUsageDescription</key>
+//    <string>Used to track distance during your run.</string>
 // ─────────────────────────────────────────────
 
 // ─────────────────────────────────────────────
@@ -118,18 +139,30 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   bool   _isPaused  = false;
   Timer? _ticker;
 
+  // ── GPS tracking ──────────────────────────────
+  // Active only while a Run step's countdown is running (not paused).
+  // Flushed to PlanStorage.addMeters() on dispose.
+  StreamSubscription<Position>? _positionSub;
+  Position?                     _lastPosition;
+  double                        _sessionMeters = 0.0;
+  bool                          _gpsAvailable  = false;
+
   @override
   void initState() {
     super.initState();
     _steps   = _buildSteps(widget.workout);
     _checked = List.filled(_steps.length, false);
     _restoreProgress();
+    _requestLocationPermission();
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
     _ticker = null;
+    _stopGps();
+    // Flush GPS meters earned this session (even partial).
+    PlanStorage.addMeters(_sessionMeters);
     if (!_checked.every((c) => c)) {
       SessionProgress.save(
         date:                  widget.date,
@@ -169,6 +202,71 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
         _isPaused    = true;
       }
     });
+  }
+
+  // ── GPS helpers ───────────────────────────────
+
+  /// Requests location permission once on screen open.
+  /// Sets [_gpsAvailable] so we know whether to start tracking.
+  Future<void> _requestLocationPermission() async {
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever) return;
+      if (permission == LocationPermission.denied)        return;
+
+      if (mounted) setState(() => _gpsAvailable = true);
+    } catch (_) {
+      // Permission plugin not available in test/web — degrade gracefully.
+    }
+  }
+
+  /// Starts the GPS position stream for a Run step.
+  /// No-ops if GPS is unavailable or already running.
+  void _startGps() {
+    if (!_gpsAvailable || _positionSub != null) return;
+    _lastPosition = null; // reset reference point for this run interval
+
+    const locationSettings = LocationSettings(
+      accuracy:          LocationAccuracy.high,
+      distanceFilter:    3, // minimum metres between updates
+    );
+
+    _positionSub = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
+    ).listen((Position pos) {
+      if (_lastPosition != null) {
+        _sessionMeters += _haversineMeters(_lastPosition!, pos);
+      }
+      _lastPosition = pos;
+    }, onError: (_) {
+      // Stream error (e.g. permission revoked mid-run) — stop quietly.
+      _stopGps();
+    });
+  }
+
+  /// Stops and cleans up the GPS stream.
+  void _stopGps() {
+    _positionSub?.cancel();
+    _positionSub  = null;
+    _lastPosition = null;
+  }
+
+  /// Haversine formula — straight-line surface distance between two positions.
+  static double _haversineMeters(Position a, Position b) {
+    const r = 6371000.0; // Earth radius in metres
+    final lat1 = a.latitude  * pi / 180;
+    final lat2 = b.latitude  * pi / 180;
+    final dLat = (b.latitude  - a.latitude)  * pi / 180;
+    final dLon = (b.longitude - a.longitude) * pi / 180;
+    final h = sin(dLat / 2) * sin(dLat / 2) +
+        cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2);
+    return 2 * r * asin(sqrt(h));
   }
 
   // ── Build flat sequential step list ──────────
@@ -252,6 +350,12 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
 
   void _startTimer(int i) {
     _ticker?.cancel();
+    // Start GPS only for Run steps; stop it for any other step type.
+    if (_steps[i].type == _T.run) {
+      _startGps();
+    } else {
+      _stopGps();
+    }
     setState(() {
       _activeIndex = i;
       _isPaused    = false;
@@ -263,10 +367,15 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   void _pauseTimer() {
     _ticker?.cancel();
     _ticker = null;
+    _stopGps(); // pause GPS — don't count standing-still distance
     setState(() => _isPaused = true);
   }
 
   void _resumeTimer() {
+    // Resume GPS only if this is a Run step.
+    if (_activeIndex != null && _steps[_activeIndex!].type == _T.run) {
+      _startGps();
+    }
     setState(() => _isPaused = false);
     _startTicker(_activeIndex!);
   }
@@ -274,6 +383,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   void _cancelTimer() {
     _ticker?.cancel();
     _ticker = null;
+    _stopGps();
     setState(() {
       _activeIndex = null;
       _remaining   = 0;
@@ -295,6 +405,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
 
   void _onTimerFinished(int i) {
     FlutterRingtonePlayer().playAlarm(looping: false);
+    _stopGps(); // step ended — GPS off until the next Run step starts
 
     final isStretch = _steps[i].type == _T.stretch;
 
@@ -467,10 +578,12 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       body: Column(
         children: [
           _ProgressHeader(
-            dateLabel:  _dateLabel,
-            progress:   _progress,
-            doneCount:  _doneCount,
-            totalCount: _steps.length,
+            dateLabel:     _dateLabel,
+            progress:      _progress,
+            doneCount:     _doneCount,
+            totalCount:    _steps.length,
+            sessionMeters: _sessionMeters,
+            gpsAvailable:  _gpsAvailable,
           ),
           Expanded(
             child: ListView.builder(
@@ -538,13 +651,24 @@ class _ProgressHeader extends StatelessWidget {
   final double progress;
   final int    doneCount;
   final int    totalCount;
+  final double sessionMeters;  // GPS distance accumulated this session
+  final bool   gpsAvailable;   // whether location permission was granted
 
   const _ProgressHeader({
     required this.dateLabel,
     required this.progress,
     required this.doneCount,
     required this.totalCount,
+    required this.sessionMeters,
+    required this.gpsAvailable,
   });
+
+  String get _distanceLabel {
+    if (!gpsAvailable) return 'GPS off';
+    final km = sessionMeters / 1000.0;
+    if (km >= 1.0) return '${km.toStringAsFixed(2)} km';
+    return '${sessionMeters.toStringAsFixed(0)} m';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -559,8 +683,42 @@ class _ProgressHeader extends StatelessWidget {
             children: [
               Text(dateLabel,
                   style: const TextStyle(color: Colors.white70, fontSize: 13)),
-              Text('$doneCount / $totalCount steps',
-                  style: const TextStyle(color: Colors.white38, fontSize: 12)),
+              // Right side: step count + live distance chip
+              Row(
+                children: [
+                  Text('$doneCount / $totalCount steps',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                  const SizedBox(width: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: gpsAvailable
+                          ? Colors.white.withOpacity(0.08)
+                          : Colors.white.withOpacity(0.04),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          gpsAvailable ? Icons.gps_fixed : Icons.gps_off,
+                          size: 11,
+                          color: gpsAvailable ? Colors.white54 : Colors.white24,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _distanceLabel,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: gpsAvailable ? Colors.white54 : Colors.white24,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 10),

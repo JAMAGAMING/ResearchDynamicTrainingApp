@@ -81,7 +81,6 @@ class _HomePageState extends State<HomePage> {
             SelectTrainingPlanScreen(activePlanId: _activePlan?.id),
       ),
     );
-    // selected == null means the active plan was deleted and no plans remain
     if (mounted) setState(() => _activePlan = selected);
   }
 
@@ -325,7 +324,7 @@ void _showTrainingPlanOptions(
                 title: 'Modify Training Plan',
                 subtitle: 'Edit your existing plan',
                 onTap: () async {
-                  Navigator.pop(context); // close the dialog
+                  Navigator.pop(context);
                   final plan = await PlanStorage.loadActive();
                   if (plan == null || !context.mounted) return;
                   final updated = await Navigator.push<TrainingPlan?>(
@@ -404,13 +403,47 @@ Widget _planOptionTile({
 //  Widgets
 // ─────────────────────────────────────────────
 
-class _TotalKmWidget extends StatelessWidget {
+// ─────────────────────────────────────────────
+//  _TotalKmWidget
+//
+//  Reads total meters from PlanStorage and displays
+//  the value in km (1 decimal place).
+//  Refreshes every time the widget is re-inserted into
+//  the tree (i.e. when the user navigates back to home
+//  after a session), so the count is always up-to-date.
+// ─────────────────────────────────────────────
+
+class _TotalKmWidget extends StatefulWidget {
   const _TotalKmWidget();
+
+  @override
+  State<_TotalKmWidget> createState() => _TotalKmWidgetState();
+}
+
+class _TotalKmWidgetState extends State<_TotalKmWidget> {
+  double _totalKm = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final meters = await PlanStorage.loadTotalMeters();
+    if (mounted) setState(() => _totalKm = meters / 1000.0);
+  }
+
+  String get _display {
+    if (_totalKm >= 100) return '${_totalKm.toStringAsFixed(0)} km';
+    if (_totalKm >= 10)  return '${_totalKm.toStringAsFixed(1)} km';
+    return '${_totalKm.toStringAsFixed(2)} km';
+  }
 
   @override
   Widget build(BuildContext context) {
     return _HomeCard(
-      onTap: () {},
+      onTap: _load, // tap to manually refresh
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -425,11 +458,11 @@ class _TotalKmWidget extends StatelessWidget {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Row(
-              children: const [
-                Icon(Icons.directions_run, size: 28, color: Colors.black),
-                SizedBox(width: 8),
-                Text('20 km',
-                    style: TextStyle(
+              children: [
+                const Icon(Icons.directions_run, size: 28, color: Colors.black),
+                const SizedBox(width: 8),
+                Text(_display,
+                    style: const TextStyle(
                         fontSize: 36,
                         fontWeight: FontWeight.bold,
                         color: Colors.black)),
@@ -461,22 +494,24 @@ class _TrainingOfTheDayWidgetState extends State<_TrainingOfTheDayWidget> {
     final date    = DateTime(today.year, today.month, today.day);
     final workout = plan?.getWorkoutForDate(date);
 
-    // Real training day → check if already completed first
     if (workout != null && !workout.isRest && !workout.isUnavailable) {
       if (workout.isCompleted) {
         _showInfoDialog(today, workout);
         return;
       }
-      Navigator.push(
+      // After returning from the session, the km widget will reload in
+      // the next build cycle because the parent rebuilds on resume.
+      await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => WorkoutSessionScreen(workout: workout, date: date),
         ),
       );
+      // Trigger a parent rebuild so _TotalKmWidget reloads its value.
+      if (mounted) setState(() {});
       return;
     }
 
-    // Not a training day → simple info dialog
     _showInfoDialog(today, workout);
   }
 
@@ -508,12 +543,12 @@ class _TrainingOfTheDayWidgetState extends State<_TrainingOfTheDayWidget> {
                 workout == null
                     ? 'No active training plan. Create one from the home screen!'
                     : workout.isCompleted
-                    ? '✅ You already completed today\'s workout. Great work!'
+                    ? 'You already completed today\'s workout. Great work!'
                     : workout.isUnavailable
                     ? 'You marked today as unavailable. Your workout was moved to another day.'
                     : workout.isRecreational
-                    ? '🌿 Rest / Recreational Day — light activity or full rest.'
-                    : '😴 Rest Day — recover and hydrate.',
+                    ? 'Rest / Recreational Day — light activity or full rest.'
+                    : 'Rest Day — recover and hydrate.',
                 style: const TextStyle(color: Colors.black54, fontSize: 14),
               ),
               const SizedBox(height: 16),

@@ -91,6 +91,36 @@ class PlanStorage {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_plansKey);
     await prefs.remove(_activeIdKey);
+    await prefs.remove(_totalMetersKey);
+  }
+
+  // ── Total meters run (lifetime, across all sessions) ──────────────────────
+  //
+  //  Stored as a plain double under 'total_meters_run'.
+  //  addMeters() reads, increments, and writes within a single prefs instance
+  //  to avoid lost-update races between rapid calls.
+
+  static const _totalMetersKey = 'total_meters_run';
+
+  /// Returns the total meters run so far (0.0 if never set).
+  static Future<double> loadTotalMeters() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_totalMetersKey) ?? 0.0;
+  }
+
+  /// Adds [meters] to the running total and persists it.
+  /// No-ops when meters <= 0.
+  static Future<void> addMeters(double meters) async {
+    if (meters <= 0) return;
+    final prefs   = await SharedPreferences.getInstance();
+    final current = prefs.getDouble(_totalMetersKey) ?? 0.0;
+    await prefs.setDouble(_totalMetersKey, current + meters);
+  }
+
+  /// Overwrites the total with an explicit value (useful for corrections).
+  static Future<void> setTotalMeters(double meters) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_totalMetersKey, meters.clamp(0.0, double.infinity));
   }
 
   // ── Internal helper ──────────────────────────────────────────────────────
