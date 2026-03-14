@@ -308,32 +308,43 @@ class TrainingPlan {
     final lastDate    = sortedDates.last;
 
     // 2. Extract the 3 training templates from existing workouts.
-    //    Walk from the start and grab the first 3 non-rest, non-recreational,
-    //    non-unavailable workouts — they are short / medium / long in order.
-    final templates = <DayWorkout>[];
+    //    Look up by slotIndex (0=easy, 1=medium, 2=hard) so that a previously
+    //    rescheduled plan whose training days are no longer in chronological
+    //    slot order still produces templates in the correct difficulty sequence.
+    //    Walk chronologically and keep the first occurrence of each slotIndex.
+    final templateBySlotMap = <int, DayWorkout>{};
     for (final date in sortedDates) {
       final w = workouts[_dateKey(date)]!;
-      if (!w.isRest && !w.isRecreational && !w.isUnavailable) {
-        templates.add(w);
-        if (templates.length == 3) break;
+      if (!w.isRest && !w.isRecreational && !w.isUnavailable && w.slotIndex >= 0) {
+        templateBySlotMap.putIfAbsent(w.slotIndex, () => w);
+        if (templateBySlotMap.length == 3) break;
       }
     }
+    // Build ordered list [slot0, slot1, slot2] for the cycle below.
+    final templates = [
+      templateBySlotMap[0],
+      templateBySlotMap[1],
+      templateBySlotMap[2],
+    ];
 
-    // Fallback: if somehow fewer than 3 found, fill from generator output
-    // using the stored deltas so intensity is still respected.
-    while (templates.length < 3) {
-      const fallbackRun  = [60, 90, 120];
-      const fallbackSets = [6, 5, 6];
-      final idx = templates.length;
-      templates.add(DayWorkout(
+    // Fallback: if a slot was not found in the live plan, synthesise from
+    // the generator baseline so intensity deltas are still respected.
+    const fallbackRun  = [60, 90, 120];
+    const fallbackSets = [6, 5, 6];
+    final resolvedTemplates = List<DayWorkout>.generate(3, (idx) {
+      return templates[idx] ?? DayWorkout(
         runSeconds: (fallbackRun[idx]  + intensityDeltaSeconds).clamp(30, 600),
         sets:       (fallbackSets[idx] + setsDelta).clamp(1, 12),
         slotIndex:  idx,
-      ));
-    }
+      );
+    });
 
     // Template index by cycle position:  0→short, 2→medium, 4→long
-    final templateBySlot = {0: templates[0], 2: templates[1], 4: templates[2]};
+    final templateBySlot = {
+      0: resolvedTemplates[0],
+      2: resolvedTemplates[1],
+      4: resolvedTemplates[2],
+    };
 
     // 3. Stamp out 28 new days starting the day after lastDate.
     final extended = Map<String, DayWorkout>.from(workouts);

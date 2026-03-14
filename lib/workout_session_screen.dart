@@ -27,11 +27,16 @@ import 'plan_storage.dart';
 //  • Step i is tappable only when step i-1 is checked.
 //  • Tapping a checked step unchecks it AND all steps after it.
 //  • Tapping an unchecked, unlocked step starts its countdown timer.
-//  • When the timer reaches 0:00 the alarm rings and the step is
+//  • When the timer reaches 0:00.00 the alarm rings and the step is
 //    auto-checked (except Stretching, which rings but waits for
 //    the user to tap to confirm).
 //  • Unchecking a step cancels and resets its timer.
 //  • When all steps are checked → show completion dialog.
+//
+//  Timer precision:
+//  • Internally tracked in centiseconds (1/100 s) for smooth display.
+//  • Ticker fires every 10 ms for a ~2-decimal countdown (M:SS.cs).
+//  • SessionProgress persists centiseconds so resume is accurate.
 //
 //  Dependencies (add to pubspec.yaml):
 //    flutter_ringtone_player: ^4.0.0
@@ -44,9 +49,9 @@ import 'plan_storage.dart';
 //    'session_progress_<yyyy-MM-dd>'
 //
 //  Fields saved:
-//    checkedSteps  → List<bool> — which steps are ticked
-//    activeIndex   → int?       — step whose timer was running
-//    remainingSeconds → int     — seconds left on that timer
+//    checkedSteps          → List<bool> — which steps are ticked
+//    activeIndex           → int?       — step whose timer was running
+//    remainingCentiseconds → int        — centiseconds left on that timer
 // ─────────────────────────────────────────────
 
 class SessionProgress {
@@ -54,16 +59,18 @@ class SessionProgress {
       'session_progress_${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 
   static Future<void> save({
-    required DateTime    date,
-    required List<bool>  checkedSteps,
-    required int?        activeIndex,
-    required int         remainingSeconds,
+    required DateTime   date,
+    required List<bool> checkedSteps,
+    required int?       activeIndex,
+    required int        remainingCentiseconds,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final data  = jsonEncode({
-      'checkedSteps':     checkedSteps,
-      'activeIndex':      activeIndex,
-      'remainingSeconds': remainingSeconds,
+      'checkedSteps':           checkedSteps,
+      'activeIndex':            activeIndex,
+      'remainingCentiseconds':  remainingCentiseconds,
+      // Legacy field kept for backwards compat
+      'remainingSeconds':       remainingCentiseconds ~/ 100,
     });
     await prefs.setString(_key(date), data);
   }
@@ -105,8 +112,9 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   late final List<bool>  _checked;
 
   // Timer state — at most one active timer at a time.
-  int?   _activeIndex; // which step is currently timing
-  int    _remaining = 0;
+  // All durations are stored in centiseconds (1/100 s).
+  int?   _activeIndex;
+  int    _remaining = 0; // centiseconds
   bool   _isPaused  = false;
   Timer? _ticker;
 
@@ -120,19 +128,14 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
 
   @override
   void dispose() {
-    // Save current progress when the user navigates away mid-session.
-    // The timer is already cancelled below — we just freeze _remaining
-    // so it can be restored next time.
     _ticker?.cancel();
     _ticker = null;
     if (!_checked.every((c) => c)) {
-      // Fire-and-forget: SharedPreferences.getInstance() is synchronous
-      // after the first call so this completes before the widget is gone.
       SessionProgress.save(
-        date:             widget.date,
-        checkedSteps:     List.of(_checked),
-        activeIndex:      _activeIndex,
-        remainingSeconds: _remaining,
+        date:                  widget.date,
+        checkedSteps:          List.of(_checked),
+        activeIndex:           _activeIndex,
+        remainingCentiseconds: _remaining,
       );
     }
     super.dispose();
@@ -143,22 +146,27 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     final saved = await SessionProgress.load(widget.date);
     if (saved == null) return;
 
-    final steps    = (saved['checkedSteps'] as List<dynamic>).cast<bool>();
-    final active   = saved['activeIndex']      as int?;
-    final remaining = saved['remainingSeconds'] as int;
+    final steps  = (saved['checkedSteps'] as List<dynamic>).cast<bool>();
+    final active = saved['activeIndex'] as int?;
 
-    // Guard against step count mismatch (e.g. plan was edited).
+    // Support both new centiseconds field and legacy seconds field.
+    final int remaining;
+    if (saved.containsKey('remainingCentiseconds')) {
+      remaining = saved['remainingCentiseconds'] as int;
+    } else {
+      remaining = ((saved['remainingSeconds'] as int?) ?? 0) * 100;
+    }
+
     if (steps.length != _checked.length) return;
-
     if (!mounted) return;
+
     setState(() {
       for (int i = 0; i < steps.length; i++) _checked[i] = steps[i];
-      // Restore the timer in a paused state — the user must tap to resume.
-      // This is safer than auto-resuming a countdown they can't see.
+      // Restore paused — safer than auto-resuming a countdown they can't see.
       if (active != null && active < _steps.length && remaining > 0) {
         _activeIndex = active;
         _remaining   = remaining;
-        _isPaused    = true; // always restore as paused
+        _isPaused    = true;
       }
     });
   }
@@ -168,43 +176,43 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     final list = <_Step>[];
 
     list.add(_Step(
-      type:         _T.warmup,
-      label:        'Warm-up',
-      detail:       '5:00 easy jog',
-      timerSeconds: w.warmupSeconds,
+      type:              _T.warmup,
+      label:             'Warm-up',
+      detail:            '5:00 easy jog',
+      timerCentiseconds: w.warmupSeconds * 100,
     ));
 
     for (int i = 1; i <= w.sets; i++) {
       list.add(_Step(
-        type:         _T.run,
-        label:        'Run',
-        detail:       w.runDisplay,
-        setNum:       i,
-        totalSets:    w.sets,
-        timerSeconds: w.runSeconds,
+        type:              _T.run,
+        label:             'Run',
+        detail:            w.runDisplay,
+        setNum:            i,
+        totalSets:         w.sets,
+        timerCentiseconds: w.runSeconds * 100,
       ));
       list.add(_Step(
-        type:         _T.walk,
-        label:        'Walk',
-        detail:       '2:00',
-        setNum:       i,
-        totalSets:    w.sets,
-        timerSeconds: w.walkSeconds,
+        type:              _T.walk,
+        label:             'Walk',
+        detail:            '2:00',
+        setNum:            i,
+        totalSets:         w.sets,
+        timerCentiseconds: w.walkSeconds * 100,
       ));
     }
 
     list.add(_Step(
-      type:         _T.cooldown,
-      label:        'Cool-down',
-      detail:       '5:00 easy jog',
-      timerSeconds: w.cooldownSeconds,
+      type:              _T.cooldown,
+      label:             'Cool-down',
+      detail:            '5:00 easy jog',
+      timerCentiseconds: w.cooldownSeconds * 100,
     ));
     // Stretching: 5-min suggested timer, rings as nudge but does NOT auto-check.
     list.add(_Step(
-      type:         _T.stretch,
-      label:        'Stretching',
-      detail:       '5–10 min',
-      timerSeconds: 300,
+      type:              _T.stretch,
+      label:             'Stretching',
+      detail:            '5–10 min',
+      timerCentiseconds: 300 * 100,
     ));
 
     return list;
@@ -220,17 +228,18 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   // ── Persist mid-session progress ─────────────
   void _saveProgress() {
     SessionProgress.save(
-      date:             widget.date,
-      checkedSteps:     List.of(_checked),
-      activeIndex:      _activeIndex,
-      remainingSeconds: _remaining,
+      date:                  widget.date,
+      checkedSteps:          List.of(_checked),
+      activeIndex:           _activeIndex,
+      remainingCentiseconds: _remaining,
     );
   }
 
   // ── Timer control ─────────────────────────────
 
+  /// Fires every 10 ms; decrements _remaining by 1 centisecond each tick.
   void _startTicker(int i) {
-    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+    _ticker = Timer.periodic(const Duration(milliseconds: 10), (_) {
       if (!mounted) return;
       setState(() => _remaining--);
       if (_remaining <= 0) {
@@ -246,7 +255,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     setState(() {
       _activeIndex = i;
       _isPaused    = false;
-      _remaining   = _steps[i].timerSeconds;
+      _remaining   = _steps[i].timerCentiseconds;
     });
     _startTicker(i);
   }
@@ -272,6 +281,18 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     });
   }
 
+  /// Stops the ticker and restores the step's full duration WITHOUT
+  /// starting a new countdown — the user must tap to begin again.
+  void _resetTimer(int i) {
+    _ticker?.cancel();
+    _ticker = null;
+    setState(() {
+      _activeIndex = i;
+      _remaining   = _steps[i].timerCentiseconds;
+      _isPaused    = true; // keep tile visible so user can tap to start
+    });
+  }
+
   void _onTimerFinished(int i) {
     FlutterRingtonePlayer().playAlarm(looping: false);
 
@@ -287,7 +308,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     _saveProgress();
 
     if (!isStretch && _allDone) {
-      SessionProgress.clear(widget.date); // no longer needed
+      SessionProgress.clear(widget.date);
       Future.delayed(const Duration(milliseconds: 350), _showCompletionDialog);
     }
   }
@@ -297,12 +318,10 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     if (!_canCheck(i) || _checked[i]) return;
 
     if (_activeIndex == i) {
-      // This step's timer is running or paused — toggle pause.
       _isPaused ? _resumeTimer() : _pauseTimer();
       return;
     }
 
-    // Another step's timer is running — cancel it, start this one.
     if (_activeIndex != null) _cancelTimer();
     _startTimer(i);
   }
@@ -312,7 +331,6 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     if (!_canCheck(i) && !_checked[i]) return;
 
     if (_checked[i]) {
-      // Un-check: cancel timer if it belongs to this step or later.
       if (_activeIndex != null && _activeIndex! >= i) _cancelTimer();
       setState(() {
         for (int j = i; j < _checked.length; j++) _checked[j] = false;
@@ -321,12 +339,11 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       return;
     }
 
-    // Manually mark complete — cancel this step's timer if running.
     if (_activeIndex == i) _cancelTimer();
     setState(() => _checked[i] = true);
 
     if (_allDone) {
-      SessionProgress.clear(widget.date); // no longer needed
+      SessionProgress.clear(widget.date);
       Future.delayed(const Duration(milliseconds: 350), _showCompletionDialog);
     } else {
       _saveProgress();
@@ -336,7 +353,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   // ── Reset tap → restart timer from full duration ──
   void _onResetTap(int i) {
     if (_activeIndex != i && !(_isPaused && _activeIndex == i)) return;
-    _startTimer(i); // _startTimer cancels the current ticker and restarts fresh
+    _resetTimer(i);
     _saveProgress();
   }
 
@@ -374,8 +391,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       barrierDismissible: false,
       builder: (_) => Dialog(
         backgroundColor: Colors.white,
-        shape:
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Padding(
           padding: const EdgeInsets.all(28),
           child: Column(
@@ -385,8 +401,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
                 width: 64, height: 64,
                 decoration: const BoxDecoration(
                     color: Colors.black, shape: BoxShape.circle),
-                child: const Icon(Icons.check,
-                    color: Colors.white, size: 36),
+                child: const Icon(Icons.check, color: Colors.white, size: 36),
               ),
               const SizedBox(height: 20),
               const Text('Workout Complete!',
@@ -498,7 +513,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
                       isLocked:    isLocked,
                       isTiming:    isTiming,
                       isPaused:    _isPaused && isTiming,
-                      remaining:   isTiming ? _remaining : step.timerSeconds,
+                      remainingCs: isTiming ? _remaining : step.timerCentiseconds,
                       onBodyTap:   () => _onBodyTap(i),
                       onCheckTap:  () => _onCheckTap(i),
                       onResetTap:  () => _onResetTap(i),
@@ -576,7 +591,7 @@ class _StepTile extends StatelessWidget {
   final bool         isLocked;
   final bool         isTiming;    // countdown is actively running
   final bool         isPaused;    // timer exists but is paused
-  final int          remaining;   // seconds to display (full duration if idle)
+  final int          remainingCs; // centiseconds to display
   final VoidCallback onBodyTap;   // start / pause / resume
   final VoidCallback onCheckTap;  // manual check / uncheck
   final VoidCallback onResetTap;  // reset timer back to full duration
@@ -587,7 +602,7 @@ class _StepTile extends StatelessWidget {
     required this.isLocked,
     required this.isTiming,
     required this.isPaused,
-    required this.remaining,
+    required this.remainingCs,
     required this.onBodyTap,
     required this.onCheckTap,
     required this.onResetTap,
@@ -595,7 +610,7 @@ class _StepTile extends StatelessWidget {
 
   Color get _bg {
     if (isChecked) return Colors.green.shade400;
-    if (isPaused) return Colors.grey.shade900;
+    if (isPaused)  return Colors.grey.shade900;
     if (isTiming)  return Colors.blue.shade700.withOpacity(0.35);
     if (isLocked)  return Colors.white.withOpacity(0.04);
     return Colors.white.withOpacity(0.10);
@@ -603,7 +618,7 @@ class _StepTile extends StatelessWidget {
 
   Color get _border {
     if (isChecked) return Colors.green.shade400;
-    if (isPaused) return Colors.grey.withOpacity(0.45);
+    if (isPaused)  return Colors.grey.withOpacity(0.45);
     if (isTiming)  return Colors.blue.shade300;
     if (isLocked)  return Colors.white12;
     return Colors.white24;
@@ -628,23 +643,27 @@ class _StepTile extends StatelessWidget {
     }
   }
 
-  static String _fmt(int s) {
-    final m   = s ~/ 60;
-    final sec = s % 60;
-    return '$m:${sec.toString().padLeft(2, '0')}';
+  /// Formats centiseconds as  M:SS.cs  (e.g. 1:20.53)
+  static String _fmt(int cs) {
+    final clamped      = cs.clamp(0, cs); // ensure non-negative display
+    final totalSeconds = clamped ~/ 100;
+    final centis       = clamped % 100;
+    final m            = totalSeconds ~/ 60;
+    final s            = totalSeconds % 60;
+    return '$m:${s.toString().padLeft(2, '0')}.${centis.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
-    final timerFraction = step.timerSeconds > 0
-        ? (remaining / step.timerSeconds).clamp(0.0, 1.0)
+    final timerFraction = step.timerCentiseconds > 0
+        ? (remainingCs / step.timerCentiseconds).clamp(0.0, 1.0)
         : 0.0;
 
-    final timerColor = (isTiming && remaining <= 10)
+    // Turn red in the last 10 seconds (= 1000 centiseconds).
+    final timerColor = (isTiming && remainingCs <= 1000)
         ? Colors.red.shade300
         : Colors.white70;
 
-    // Checkbox icon — always a plain check or lock, never changes for timer state
     Widget? checkIcon;
     if (isChecked) {
       checkIcon = const Icon(Icons.check, size: 15, color: Colors.black);
@@ -653,7 +672,6 @@ class _StepTile extends StatelessWidget {
     }
 
     return GestureDetector(
-      // Body tap → timer start / pause / resume
       onTap: isLocked ? null : onBodyTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -691,7 +709,7 @@ class _StepTile extends StatelessWidget {
                 // ── Timer readout ──────────────────
                 if (!isChecked) ...[
                   Text(
-                    _fmt(remaining),
+                    _fmt(remainingCs),
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
@@ -714,10 +732,7 @@ class _StepTile extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: Colors.transparent,
                         shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white38,
-                          width: 2,
-                        ),
+                        border: Border.all(color: Colors.white38, width: 2),
                       ),
                       child: const Icon(
                         Icons.replay_rounded,
@@ -787,7 +802,7 @@ class _Step {
   final _T     type;
   final String label;
   final String detail;
-  final int    timerSeconds; // full countdown duration
+  final int    timerCentiseconds; // full countdown in centiseconds (1/100 s)
   final int?   setNum;
   final int?   totalSets;
 
@@ -795,7 +810,7 @@ class _Step {
     required this.type,
     required this.label,
     required this.detail,
-    required this.timerSeconds,
+    required this.timerCentiseconds,
     this.setNum,
     this.totalSets,
   });

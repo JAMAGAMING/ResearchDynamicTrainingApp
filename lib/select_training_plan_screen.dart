@@ -1059,12 +1059,14 @@ class _EditSpecificDaysDialogState
 
   /// Returns the "clean" base for rescheduling.
   ///
-  /// Since intensity adjustments are now committed directly into the workout
-  /// values (intensityDeltaSeconds is always 0 after any save), the live plan
-  /// values ARE the correct baseline for all days — both original and extended.
-  /// We only strip rescheduling side-effects (moved workouts, extra rest days
-  /// added outside the original positions) by rebuilding from the live values
-  /// but clearing any isUnavailable flags that aren't in the current selection.
+  /// Rebuilds the canonical train/rest/recreational skeleton from the generator,
+  /// then overlays the live plan's runSeconds/sets for each slot.
+  ///
+  /// Crucially, live training values are looked up by [slotIndex] (0=easy,
+  /// 1=medium, 2=hard) rather than by date key.  This means a workout that was
+  /// previously moved to a different date still contributes its correct
+  /// difficulty values to its canonical slot position, preventing medium or hard
+  /// days from appearing before easy ones after rescheduling.
   ///
   /// Only [isCompleted] flags are preserved as-is.
   Map<String, DayWorkout> _baseWorkouts() {
@@ -1073,55 +1075,104 @@ class _EditSpecificDaysDialogState
         if (e.value.isCompleted) e.key,
     };
 
-    // Regenerate the original 28-day structure to get the correct positional
-    // slots (which days are train/rest/recreational), then overlay the live
-    // plan's runSeconds/sets so adjusted values are preserved.
+    // Regenerate the original 28-day skeleton to get correct positional slots.
     final original = TrainingPlanGenerator.generate(
       widget.plan.profile,
       widget.plan.startDate,
     ).workouts;
 
-    // Build a lookup of live training stats keyed by date.
-    // We use the live plan's values for all training days.
-    final liveTraining = <String, DayWorkout>{
-      for (final e in widget.plan.workouts.entries)
-        if (!e.value.isRest && !e.value.isUnavailable && !e.value.isRecreational)
-          e.key: e.value,
-    };
-
-    // Cutoff = last day of the original 28.
+    // ── Build a per-slotIndex lookup from the LIVE plan ──────────────────────
+    // Walk the live plan in chronological order and keep the first encountered
+    // workout for each slotIndex (0, 1, 2).  Using the first occurrence avoids
+    // picking up a workout that was moved far forward; the one closest to its
+    // canonical position best represents the user's intended intensity.
+    //
+    // Extended-section slots (days past 28) are collected separately so they
+    // can be matched when rebuilding the extended portion of base.
     final originalDates = original.keys.map(DateTime.parse).toList()..sort();
     final cutoffDate    = originalDates.last;
 
+    final liveSortedEntries = widget.plan.workouts.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    // slotIndex → best live DayWorkout for the original 28-day window
+    final liveBySlot = <int, DayWorkout>{};
+    // slotIndex → best live DayWorkout for extended days (past cutoff)
+    final liveBySlotExtended = <int, DayWorkout>{};
+
+    for (final e in liveSortedEntries) {
+      final w = e.value;
+      if (w.isRest || w.isUnavailable || w.isRecreational || w.slotIndex < 0) {
+        continue;
+      }
+      final date = DateTime.parse(e.key);
+      if (!date.isAfter(cutoffDate)) {
+        liveBySlot.putIfAbsent(w.slotIndex, () => w);
+      } else {
+        liveBySlotExtended.putIfAbsent(w.slotIndex, () => w);
+      }
+    }
+
     final base = <String, DayWorkout>{};
 
-    // Original 28 days: use live training stats where available (preserves
-    // intensity adjustments), fall back to generator values otherwise.
+    // ── Original 28 days ─────────────────────────────────────────────────────
     for (final e in original.entries) {
-      final w    = e.value;
-      final live = liveTraining[e.key];
-      if (!w.isRest && !w.isUnavailable && live != null) {
-        base[e.key] = DayWorkout(
-          runSeconds:      live.runSeconds,
-          sets:            live.sets,
-          warmupSeconds:   live.warmupSeconds,
-          walkSeconds:     live.walkSeconds,
-          cooldownSeconds: live.cooldownSeconds,
-          isCompleted:     completedKeys.contains(e.key),
-          slotIndex:       live.slotIndex,
-        );
+      final w = e.value;
+      if (!w.isRest && !w.isUnavailable && w.slotIndex >= 0) {
+        // Training day: overlay live values for this slot if available.
+        final live = liveBySlot[w.slotIndex];
+        if (live != null) {
+          base[e.key] = DayWorkout(
+            runSeconds:      live.runSeconds,
+            sets:            live.sets,
+            warmupSeconds:   live.warmupSeconds,
+            walkSeconds:     live.walkSeconds,
+            cooldownSeconds: live.cooldownSeconds,
+            isCompleted:     completedKeys.contains(e.key),
+            slotIndex:       w.slotIndex,  // always use canonical slot
+          );
+        } else {
+          // Fallback: generator value (intensity not yet adjusted).
+          base[e.key] = completedKeys.contains(e.key)
+              ? w.copyWith(isCompleted: true)
+              : w;
+        }
       } else {
+        // Rest / recreational / unavailable skeleton day.
         base[e.key] = completedKeys.contains(e.key)
             ? w.copyWith(isCompleted: true)
             : w;
       }
     }
 
-    // Extended days (past day 28): take directly from the live plan.
+    // ── Extended days (past day 28) ───────────────────────────────────────────
+    // The extended section was generated with the same 7-day cycle, so each
+    // training day already carries the correct slotIndex.  Overlay live values
+    // by slot just like above.
     for (final e in widget.plan.workouts.entries) {
       final date = DateTime.parse(e.key);
-      if (date.isAfter(cutoffDate)) {
-        final w = e.value;
+      if (!date.isAfter(cutoffDate)) continue;
+
+      final w = e.value;
+      if (!w.isRest && !w.isUnavailable && !w.isRecreational && w.slotIndex >= 0) {
+        // Prefer extended-section live value; fall back to original-section live.
+        final live = liveBySlotExtended[w.slotIndex] ?? liveBySlot[w.slotIndex];
+        if (live != null) {
+          base[e.key] = DayWorkout(
+            runSeconds:      live.runSeconds,
+            sets:            live.sets,
+            warmupSeconds:   live.warmupSeconds,
+            walkSeconds:     live.walkSeconds,
+            cooldownSeconds: live.cooldownSeconds,
+            isCompleted:     completedKeys.contains(e.key),
+            slotIndex:       w.slotIndex,
+          );
+        } else {
+          base[e.key] = completedKeys.contains(e.key)
+              ? w.copyWith(isCompleted: true)
+              : w;
+        }
+      } else {
         base[e.key] = completedKeys.contains(e.key)
             ? w.copyWith(isCompleted: true)
             : w;
