@@ -232,7 +232,13 @@ class TrainingPlan {
   /// Applied on top of the generator's original values. Default 0.
   final int setsDelta;
 
-  const TrainingPlan({
+  /// UTC timestamp of the last local modification.
+  /// Stamped automatically by PlanStorage.save().
+  /// Used for conflict resolution during server sync:
+  /// whichever copy has the later lastModifiedAt wins.
+  final DateTime lastModifiedAt;
+
+  TrainingPlan({
     required this.id,
     required this.profile,
     required this.startDate,
@@ -240,7 +246,8 @@ class TrainingPlan {
     required this.workouts,
     this.intensityDeltaSeconds = 0,
     this.setsDelta             = 0,
-  });
+    DateTime? lastModifiedAt,
+  }) : lastModifiedAt = lastModifiedAt ?? DateTime.utc(2000);
 
   DayWorkout? getWorkoutForDate(DateTime date) => workouts[_dateKey(date)];
 
@@ -263,6 +270,7 @@ class TrainingPlan {
     'workouts': workouts.map((k, v) => MapEntry(k, v.toJson())),
     'intensityDeltaSeconds': intensityDeltaSeconds,
     'setsDelta':             setsDelta,
+    'lastModifiedAt':        lastModifiedAt.toUtc().toIso8601String(),
   };
 
   factory TrainingPlan.fromJson(Map<String, dynamic> j) => TrainingPlan(
@@ -274,6 +282,10 @@ class TrainingPlan {
         .map((k, v) => MapEntry(k, DayWorkout.fromJson(v as Map<String, dynamic>))),
     intensityDeltaSeconds:  (j['intensityDeltaSeconds'] as int?) ?? 0,
     setsDelta:              (j['setsDelta']             as int?) ?? 0,
+    // Fallback to epoch so old saved plans always lose to a real server timestamp.
+    lastModifiedAt: j['lastModifiedAt'] != null
+        ? DateTime.parse(j['lastModifiedAt'] as String).toUtc()
+        : DateTime.utc(2000),
   );
 
   String toJsonString()                        => jsonEncode(toJson());

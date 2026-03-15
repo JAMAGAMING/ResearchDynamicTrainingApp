@@ -30,18 +30,30 @@ class PlanStorage {
     final prefs = await SharedPreferences.getInstance();
     final plans = _decodePlans(prefs.getString(_plansKey));
 
-    final idx = plans.indexWhere((p) => p.id == plan.id);
+    // Stamp the modification time so the sync service can compare with the server.
+    final stamped = TrainingPlan(
+      id:                    plan.id,
+      profile:               plan.profile,
+      startDate:             plan.startDate,
+      tim:                   plan.tim,
+      workouts:              plan.workouts,
+      intensityDeltaSeconds: plan.intensityDeltaSeconds,
+      setsDelta:             plan.setsDelta,
+      lastModifiedAt:        DateTime.now().toUtc(),
+    );
+
+    final idx = plans.indexWhere((p) => p.id == stamped.id);
     if (idx >= 0) {
-      plans[idx] = plan;
+      plans[idx] = stamped;
     } else {
-      plans.add(plan);
+      plans.add(stamped);
     }
 
     await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
-    await prefs.setString(_activeIdKey, plan.id);
+    await prefs.setString(_activeIdKey, stamped.id);
 
     // Push to server in the background — does not block local save.
-    SyncService.pushPlan(plan);
+    SyncService.pushPlan(stamped);
   }
 
   // ── Save without changing the active plan (used by sync pull) ──

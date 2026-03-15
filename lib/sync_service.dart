@@ -6,75 +6,100 @@ import 'auth_storage.dart';
 // ─────────────────────────────────────────────
 //  SyncService
 //
-//  Implements the sync rules:
+//  Conflict resolution rule (timestamp-based):
+//    • Every TrainingPlan carries a lastModifiedAt (UTC) stamped
+//      by PlanStorage.save() on every local write.
+//    • The server row carries its own updatedAt (set by Prisma
+//      on every upsert).
+//    • Whichever copy is NEWER wins:
 //
-//  Rule 1 — Full sync (called when SelectTrainingPlanScreen opens):
-//    a) Push every local plan to the server (upsert).
-//       Local is always the source of truth.
-//    b) Pull any server plan whose planId doesn't exist locally yet
-//       and save it locally. (Never overwrites existing local plans.)
+//        local.lastModifiedAt > server.updatedAt  → push local to server
+//        server.updatedAt > local.lastModifiedAt  → pull server, overwrite local
+//        timestamps equal                         → already in sync, skip
+//        plan missing on server                   → push local
+//        plan missing locally                     → pull from server
 //
-//  Rule 2 — Push on modify (called after every PlanStorage.save):
-//    Upload the modified plan to PUT /plans/:planId.
+//  This means:
+//    • Device B modifies a plan offline → its lastModifiedAt advances.
+//    • Device B goes online and syncs → local is newer → pushes to server.
+//    • Device A syncs next → server is now newer → pulls Device B's version.
 //
-//  Rule 3 — Delete mirror (called after PlanStorage.delete):
-//    Fire-and-forget DELETE /plans/:planId.
+//  Full sync flow (triggered on SelectTrainingPlanScreen open / manual refresh):
+//    1. Fetch all server stubs (planId + updatedAt) in one request.
+//    2. Compare each local plan against its server counterpart.
+//    3. Pull any server-only plans that don't exist locally.
 //
-//  All methods are fire-and-forget safe: they return false / quietly
-//  on network failure so the app works fully offline.
+//  Push on modify: always push — local was just saved so it is newest.
+//  Delete mirror:  fire-and-forget DELETE on server.
+//
+//  All methods degrade gracefully when offline.
 // ─────────────────────────────────────────────
 
 class SyncService {
+
   // ── Full bidirectional sync ───────────────────
   //
-  // Returns the number of plans pulled from the server (0 if offline).
-  // The caller can use this to know if _loadPlans() should be called again.
+  // Returns the number of plans that were pulled from the server and
+  // saved locally (so the caller knows whether to reload the list).
   static Future<int> fullSync() async {
     final token = await AuthStorage.getToken();
     if (token == null) return 0;
 
-    // ── Step 1: Push all local plans ─────────────
-    final localPlans = await PlanStorage.loadAll();
-    if (localPlans.isNotEmpty) {
-      final batch = localPlans
-          .map((p) => {'planId': p.id, 'planJson': p.toJsonString()})
-          .toList();
-      await ApiService.batchUpsertPlans(token, batch);
+    // ── Step 1: Get all server stubs in one request ──
+    final stubs = await ApiService.listPlanStubs(token);
+
+    // Build planId → server updatedAt lookup.
+    final serverTimestamps = <String, DateTime>{};
+    for (final stub in stubs) {
+      final id  = stub['planId']    as String?;
+      final raw = stub['updatedAt'] as String?;
+      if (id == null || raw == null) continue;
+      try {
+        serverTimestamps[id] = DateTime.parse(raw).toUtc();
+      } catch (_) {}
     }
 
-    // ── Step 2: Pull new plans from server ────────
-    final stubs = await ApiService.listPlanStubs(token);
-    if (stubs.isEmpty) return 0;
+    final localPlans = await PlanStorage.loadAll();
+    final localIds   = { for (final p in localPlans) p.id };
+    int locallyChanged = 0;
 
-    final localIds = localPlans.map((p) => p.id).toSet();
-    int pulled = 0;
+    // ── Step 2: Reconcile each local plan ────────
+    for (final plan in localPlans) {
+      final serverTime = serverTimestamps[plan.id];
 
-    for (final stub in stubs) {
-      final serverId = stub['planId'] as String?;
-      if (serverId == null) continue;
-      if (localIds.contains(serverId)) continue; // already have it locally
+      if (serverTime == null) {
+        // Not on server yet → push it.
+        await ApiService.upsertPlan(token, plan.id, plan.toJsonString());
+        continue;
+      }
 
-      // Fetch the full plan and save locally.
-      final data = await ApiService.getPlan(token, serverId);
-      if (data == null) continue;
+      final localTime = plan.lastModifiedAt;
 
-      final planJson = data['planJson'] as String?;
-      if (planJson == null) continue;
+      if (localTime.isAfter(serverTime)) {
+        // Local is newer → push to server.
+        await ApiService.upsertPlan(token, plan.id, plan.toJsonString());
+      } else if (serverTime.isAfter(localTime)) {
+        // Server is newer → pull and overwrite local silently.
+        final pulled = await _pullAndSave(token, plan.id);
+        if (pulled) locallyChanged++;
+      }
+      // If equal → already in sync, nothing to do.
+    }
 
-      try {
-        final plan = TrainingPlan.fromJsonString(planJson);
-        // Save without marking it active — let the user choose.
-        await PlanStorage.saveWithoutActivating(plan);
-        pulled++;
-      } catch (_) {
-        // Corrupt/incompatible plan — skip silently.
+    // ── Step 3: Pull server-only plans ───────────
+    for (final serverId in serverTimestamps.keys) {
+      if (!localIds.contains(serverId)) {
+        final pulled = await _pullAndSave(token, serverId);
+        if (pulled) locallyChanged++;
       }
     }
 
-    return pulled;
+    return locallyChanged;
   }
 
   // ── Push single plan after any local modification ──
+  // Local was just saved so it is by definition the newest copy.
+  // No timestamp comparison needed here.
   static Future<void> pushPlan(TrainingPlan plan) async {
     final token = await AuthStorage.getToken();
     if (token == null) return;
@@ -85,6 +110,48 @@ class SyncService {
   static Future<void> deletePlan(String planId) async {
     final token = await AuthStorage.getToken();
     if (token == null) return;
-    await ApiService.deletePlan(token, planId); // fire-and-forget
+    await ApiService.deletePlan(token, planId);
+  }
+
+  // ── Fetch a plan from server and save locally ──
+  //
+  // Uses saveWithoutActivating so:
+  //   • The active plan pointer is not changed.
+  //   • No further push back to the server is triggered.
+  //
+  // The server's updatedAt is stored as the local lastModifiedAt so
+  // the next sync sees them as equal and skips it.
+  static Future<bool> _pullAndSave(String token, String planId) async {
+    final data = await ApiService.getPlan(token, planId);
+    if (data == null) return false;
+
+    final planJson        = data['planJson']   as String?;
+    final serverUpdatedAt = data['updatedAt']  as String?;
+    if (planJson == null) return false;
+
+    DateTime? serverTime;
+    if (serverUpdatedAt != null) {
+      try { serverTime = DateTime.parse(serverUpdatedAt).toUtc(); } catch (_) {}
+    }
+
+    try {
+      final raw = TrainingPlan.fromJsonString(planJson);
+      // Reconstruct with server's timestamp so local lastModifiedAt == server
+      // updatedAt after the pull — prevents an immediate push-back on next sync.
+      final plan = TrainingPlan(
+        id:                    raw.id,
+        profile:               raw.profile,
+        startDate:             raw.startDate,
+        tim:                   raw.tim,
+        workouts:              raw.workouts,
+        intensityDeltaSeconds: raw.intensityDeltaSeconds,
+        setsDelta:             raw.setsDelta,
+        lastModifiedAt:        serverTime ?? raw.lastModifiedAt,
+      );
+      await PlanStorage.saveWithoutActivating(plan);
+      return true;
+    } catch (_) {
+      return false; // corrupt or incompatible plan — skip silently
+    }
   }
 }

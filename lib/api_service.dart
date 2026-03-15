@@ -16,8 +16,9 @@ import 'package:http/http.dart' as http;
 
 class ApiService {
   // ── Change this to your server's address ──────
-  static const String baseUrl = 'http://127.0.0.1:3000'; // Android emulator default
+  static const String baseUrl = 'http://192.168.100.9:3000'; // Android emulator default
 
+  //'http://127.0.0.1:3000'; // localhost default
   //'http://10.0.2.2:3000'; // Android emulator default
   // For a real device on the same network: 'http://192.168.x.x:3000'
   // For production:                        'https://yourserver.com'
