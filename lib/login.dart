@@ -36,6 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (result == null) {
+      // null means the request never reached the server (network error / timeout).
       setState(() {
         _loading      = false;
         _errorMessage = 'Could not connect to server. Check your connection.';
@@ -43,13 +44,18 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final token = result['token'] as String?;
-    final user  = result['user']  as Map<String, dynamic>?;
+    final status = result['_status'] as int? ?? 200;
+    final token  = result['token'] as String?;
+    final user   = result['user']  as Map<String, dynamic>?;
 
     if (token == null || user == null) {
+      // Server was reachable but rejected the credentials.
+      final serverMessage = result['error'] as String?;
       setState(() {
         _loading      = false;
-        _errorMessage = result['error'] as String? ?? 'Invalid username or password';
+        _errorMessage = status == 401
+            ? 'Incorrect username or password.'
+            : serverMessage ?? 'Login failed. Please try again.';
       });
       return;
     }
@@ -64,7 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(builder: (_) => const HomePage()),
-      (r) => false,
+          (r) => false,
     );
   }
 
@@ -224,14 +230,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       child: _loading
                           ? const SizedBox(
-                              height: 20, width: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white))
+                          height: 20, width: 20,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
                           : const Text(
-                              'Log In',
-                              style: TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.w600),
-                            ),
+                        'Log In',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -246,7 +252,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           context,
                           MaterialPageRoute(builder: (context) => const RegisterScreen()),
                         );
-                        },
+                      },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
                         foregroundColor: Colors.white,

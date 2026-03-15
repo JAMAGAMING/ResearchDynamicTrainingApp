@@ -220,7 +220,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
       if (permission == LocationPermission.deniedForever) return;
       if (permission == LocationPermission.denied)        return;
 
-      if (mounted) setState(() => _gpsAvailable = true);
+      if (mounted) { print('GPS available: true'); setState(() => _gpsAvailable = true); }
     } catch (_) {
       // Permission plugin not available in test/web — degrade gracefully.
     }
@@ -233,19 +233,35 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     _lastPosition = null; // reset reference point for this run interval
 
     const locationSettings = LocationSettings(
-      accuracy:          LocationAccuracy.high,
-      distanceFilter:    3, // minimum metres between updates
+      accuracy:       LocationAccuracy.high,
+      distanceFilter: 0, // accept every fix — we filter by accuracy instead
     );
 
     _positionSub = Geolocator.getPositionStream(
       locationSettings: locationSettings,
     ).listen((Position pos) {
+      print('GPS fix: lat=${pos.latitude}, lon=${pos.longitude}, accuracy=${pos.accuracy}m');
+
+      if (pos.accuracy > 20.0) {
+        print('Fix rejected — accuracy too poor');
+        return;
+      }
+
       if (_lastPosition != null) {
-        _sessionMeters += _haversineMeters(_lastPosition!, pos);
+        final delta = _haversineMeters(_lastPosition!, pos);
+        final elapsedSeconds = pos.timestamp
+            .difference(_lastPosition!.timestamp)
+            .inMilliseconds / 1000.0;
+        final maxReasonable = elapsedSeconds * 10.0;
+        if (delta <= maxReasonable) {
+          _sessionMeters += delta;
+          print('Distance added: ${delta.toStringAsFixed(2)}m — total: ${_sessionMeters.toStringAsFixed(2)}m');
+        } else {
+          print('Fix rejected — speed lurch');
+        }
       }
       _lastPosition = pos;
     }, onError: (_) {
-      // Stream error (e.g. permission revoked mid-run) — stop quietly.
       _stopGps();
     });
   }

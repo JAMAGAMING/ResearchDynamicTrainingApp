@@ -33,28 +33,30 @@ class ApiService {
   };
 
   static Future<Map<String, dynamic>?> _post(
-    String path,
-    Map<String, dynamic> body, {
-    String? token,
-  }) async {
+      String path,
+      Map<String, dynamic> body, {
+        String? token,
+      }) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl$path'),
-            headers: _headers(token: token),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$baseUrl$path'),
+        headers: _headers(token: token),
+        body: jsonEncode(body),
+      )
           .timeout(_timeout);
-      return _decode(res);
+      // Return body even on 4xx so callers can read the error message.
+      // Only return null on network failure (caught below).
+      return _decodeAny(res);
     } catch (_) {
-      return null; // network unavailable
+      return null; // network unavailable — null means "couldn't reach server"
     }
   }
 
   static Future<Map<String, dynamic>?> _get(
-    String path, {
-    String? token,
-  }) async {
+      String path, {
+        String? token,
+      }) async {
     try {
       final res = await http
           .get(Uri.parse('$baseUrl$path'), headers: _headers(token: token))
@@ -66,17 +68,17 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>?> _put(
-    String path,
-    Map<String, dynamic> body, {
-    String? token,
-  }) async {
+      String path,
+      Map<String, dynamic> body, {
+        String? token,
+      }) async {
     try {
       final res = await http
           .put(
-            Uri.parse('$baseUrl$path'),
-            headers: _headers(token: token),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$baseUrl$path'),
+        headers: _headers(token: token),
+        body: jsonEncode(body),
+      )
           .timeout(_timeout);
       return _decode(res);
     } catch (_) {
@@ -96,11 +98,28 @@ class ApiService {
   }
 
   /// Decodes response; returns null if status >= 400.
+  /// Used by GET/PUT/DELETE where callers treat null as "failed".
   static Map<String, dynamic>? _decode(http.Response res) {
     if (res.statusCode >= 400) return null;
     try {
       final body = jsonDecode(res.body);
       if (body is Map<String, dynamic>) return body;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Decodes response regardless of status code.
+  /// Used by POST so callers can read error messages from 4xx responses.
+  /// Returns null only if the body isn't valid JSON or is not a map.
+  static Map<String, dynamic>? _decodeAny(http.Response res) {
+    try {
+      final body = jsonDecode(res.body);
+      if (body is Map<String, dynamic>) {
+        // Inject the HTTP status so callers can distinguish error types.
+        return {...body, '_status': res.statusCode};
+      }
       return null;
     } catch (_) {
       return null;
@@ -134,10 +153,10 @@ class ApiService {
     required String fullName,
     required String password,
   }) => _post('/auth/register', {
-        'username': username,
-        'fullName': fullName,
-        'password': password,
-      });
+    'username': username,
+    'fullName': fullName,
+    'password': password,
+  });
 
   /// Login.
   /// Returns { token, user } on success, null on failure.
@@ -153,10 +172,10 @@ class ApiService {
     required String currentPassword,
     required String newPassword,
   }) => _post(
-        '/auth/reset-password',
-        {'currentPassword': currentPassword, 'newPassword': newPassword},
-        token: token,
-      );
+    '/auth/reset-password',
+    {'currentPassword': currentPassword, 'newPassword': newPassword},
+    token: token,
+  );
 
   /// Get current user profile.
   static Future<Map<String, dynamic>?> getMe(String token) =>
@@ -187,18 +206,18 @@ class ApiService {
   /// Get full plan JSON for a single planId.
   /// Returns null on failure.
   static Future<Map<String, dynamic>?> getPlan(
-    String token,
-    String planId,
-  ) => _get('/plans/$planId', token: token);
+      String token,
+      String planId,
+      ) => _get('/plans/$planId', token: token);
 
   /// Upsert a plan on the server.
   /// [planJson] must be the result of plan.toJsonString().
   /// Returns { planId, updatedAt } on success, null on failure.
   static Future<Map<String, dynamic>?> upsertPlan(
-    String token,
-    String planId,
-    String planJson,
-  ) => _put('/plans/$planId', {'planJson': planJson}, token: token);
+      String token,
+      String planId,
+      String planJson,
+      ) => _put('/plans/$planId', {'planJson': planJson}, token: token);
 
   /// Delete a plan from the server.
   /// Fire-and-forget safe — returns false silently if offline.
@@ -208,9 +227,9 @@ class ApiService {
   /// Batch upsert multiple plans (used on first login sync).
   /// [plans] = [{ planId: String, planJson: String }, ...]
   static Future<bool> batchUpsertPlans(
-    String token,
-    List<Map<String, String>> plans,
-  ) async {
+      String token,
+      List<Map<String, String>> plans,
+      ) async {
     final res = await _post('/plans/batch', {'plans': plans}, token: token);
     return res != null;
   }
@@ -234,17 +253,17 @@ class ApiService {
   /// Convenience: performs a POST and also returns the raw response
   /// so callers can read error messages.
   static Future<({int statusCode, Map<String, dynamic>? body})> postRaw(
-    String path,
-    Map<String, dynamic> body, {
-    String? token,
-  }) async {
+      String path,
+      Map<String, dynamic> body, {
+        String? token,
+      }) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl$path'),
-            headers: _headers(token: token),
-            body: jsonEncode(body),
-          )
+        Uri.parse('$baseUrl$path'),
+        headers: _headers(token: token),
+        body: jsonEncode(body),
+      )
           .timeout(_timeout);
       Map<String, dynamic>? decoded;
       try { decoded = jsonDecode(res.body); } catch (_) {}
