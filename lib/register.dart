@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'api_service.dart';
+import 'auth_storage.dart';
+import 'sync_service.dart';
+import 'homepage.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({Key? key}) : super(key: key);
@@ -13,8 +17,69 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController = TextEditingController();
 
-  bool _obscurePassword = true;
+  bool _obscurePassword        = true;
   bool _obscureConfirmPassword = true;
+  bool _loading                = false;
+  String? _errorMessage;
+
+  Future<void> _register() async {
+    final fullName = _fullNameController.text.trim();
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text;
+    final confirm  = _confirmPasswordController.text;
+
+    if (fullName.isEmpty || username.isEmpty || password.isEmpty || confirm.isEmpty) {
+      setState(() => _errorMessage = 'Please fill out all fields');
+      return;
+    }
+    if (password != confirm) {
+      setState(() => _errorMessage = 'Passwords do not match');
+      return;
+    }
+    if (password.length < 6) {
+      setState(() => _errorMessage = 'Password must be at least 6 characters');
+      return;
+    }
+
+    setState(() { _loading = true; _errorMessage = null; });
+
+    final result = await ApiService.register(
+      username: username,
+      fullName: fullName,
+      password: password,
+    );
+
+    if (!mounted) return;
+
+    if (result == null) {
+      setState(() {
+        _loading      = false;
+        _errorMessage = 'Could not connect to server. Check your connection.';
+      });
+      return;
+    }
+
+    final token = result['token'] as String?;
+    final user  = result['user']  as Map<String, dynamic>?;
+
+    if (token == null || user == null) {
+      setState(() {
+        _loading      = false;
+        _errorMessage = result['error'] as String? ?? 'Registration failed';
+      });
+      return;
+    }
+
+    await AuthStorage.save(token: token, user: user);
+    SyncService.fullSync(); // push any local plans in background
+
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const HomePage()),
+      (r) => false,
+    );
+  }
 
   @override
   void dispose() {
@@ -113,47 +178,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                   const SizedBox(height: 32),
 
+                  // Error message
+                  if (_errorMessage != null) ...[
+                    Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
                   // Register button
                   SizedBox(
                     width: double.infinity,
                     height: 48,
                     child: ElevatedButton(
-                      onPressed: () {
-                        String fullName = _fullNameController.text.trim();
-                        String username = _usernameController.text.trim();
-                        String password = _passwordController.text;
-                        String confirmPassword = _confirmPasswordController.text;
-
-                        if (fullName.isEmpty || username.isEmpty || password.isEmpty || confirmPassword.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please fill out all fields'),
-                              backgroundColor: Colors.redAccent,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        } else if (password != confirmPassword) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Passwords do not match'),
-                              backgroundColor: Colors.redAccent,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        } else {
-                          // Registration logic goes here
-                          print('Register: $fullName, $username');
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Registration successful!'),
-                              backgroundColor: Colors.green,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          // Optionally navigate back to login:
-                          // Navigator.pop(context);
-                        }
-                      },
+                      onPressed: _loading ? null : _register,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
                         foregroundColor: Colors.white,
@@ -162,13 +202,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         ),
                         elevation: 0,
                       ),
-                      child: const Text(
-                        'Register',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: _loading
+                          ? const SizedBox(
+                              height: 20, width: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : const Text(
+                              'Register',
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
                     ),
                   ),
 

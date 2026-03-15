@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
+import 'sync_service.dart';
 
 // ─────────────────────────────────────────────
 //  SelectTrainingPlanScreen
@@ -31,6 +32,7 @@ class _SelectTrainingPlanScreenState
   List<TrainingPlan> _plans   = [];
   String?            _activeId;
   bool               _loading = true;
+  bool               _syncing = false; // true while background sync is running
 
   @override
   void initState() {
@@ -46,7 +48,25 @@ class _SelectTrainingPlanScreenState
           if (target != null && mounted) _showModifyOptions(target);
         });
       }
+      // Kick off a background sync every time this screen opens.
+      _syncWithServer();
     });
+  }
+
+  // ── Server sync ─────────────────────────────
+  // Pushes all local plans, then pulls any new plans from the server.
+  // Shows a subtle indicator in the AppBar while running.
+  Future<void> _syncWithServer() async {
+    if (_syncing) return;
+    setState(() => _syncing = true);
+
+    final pulled = await SyncService.fullSync();
+
+    if (!mounted) return;
+    // If new plans were pulled, reload the local list.
+    if (pulled > 0) await _loadPlans();
+
+    setState(() => _syncing = false);
   }
 
   Future<void> _loadPlans() async {
@@ -319,9 +339,29 @@ class _SelectTrainingPlanScreenState
       appBar: AppBar(
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Training Plans',
-            style: TextStyle(color: Colors.white)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Training Plans',
+                style: TextStyle(color: Colors.white)),
+            if (_syncing) ...[
+              const SizedBox(width: 10),
+              const SizedBox(
+                width: 14, height: 14,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white54),
+              ),
+            ],
+          ],
+        ),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.sync, color: Colors.white70),
+            tooltip: 'Sync with server',
+            onPressed: _syncing ? null : _syncWithServer,
+          ),
+        ],
       ),
       body: _loading
           ? const Center(

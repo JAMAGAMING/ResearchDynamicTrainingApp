@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'training_plan_model.dart';
+import 'sync_service.dart';
 
 // ─────────────────────────────────────────────
 //  PlanStorage — stores multiple training plans
@@ -21,6 +22,7 @@ class PlanStorage {
   static const _activeIdKey = 'active_plan_id';
 
   // ── Save a plan (replaces if same id exists, appends otherwise) ──
+  //  Also pushes the plan to the server in the background.
 
   static Future<void> save(TrainingPlan plan) async {
     // Obtain prefs once and pass it through so loadAll doesn't
@@ -37,6 +39,27 @@ class PlanStorage {
 
     await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
     await prefs.setString(_activeIdKey, plan.id);
+
+    // Push to server in the background — does not block local save.
+    SyncService.pushPlan(plan);
+  }
+
+  // ── Save without changing the active plan (used by sync pull) ──
+  //  Does NOT push back to the server (it already came from there).
+
+  static Future<void> saveWithoutActivating(TrainingPlan plan) async {
+    final prefs = await SharedPreferences.getInstance();
+    final plans = _decodePlans(prefs.getString(_plansKey));
+
+    final idx = plans.indexWhere((p) => p.id == plan.id);
+    if (idx >= 0) {
+      plans[idx] = plan; // update existing
+    } else {
+      plans.add(plan);   // add new
+    }
+
+    await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
+    // Intentionally does NOT update _activeIdKey or call SyncService.
   }
 
   // ── Load all saved plans ──
@@ -68,6 +91,7 @@ class PlanStorage {
   }
 
   // ── Delete a plan by id ──
+  //  Also mirrors the deletion to the server in the background.
 
   static Future<void> delete(String planId) async {
     final prefs  = await SharedPreferences.getInstance();
@@ -83,6 +107,9 @@ class PlanStorage {
         await prefs.remove(_activeIdKey);
       }
     }
+
+    // Mirror deletion to server — fire-and-forget.
+    SyncService.deletePlan(planId);
   }
 
   // ── Clear everything ──

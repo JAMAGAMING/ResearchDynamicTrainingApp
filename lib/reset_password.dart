@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'api_service.dart';
+import 'auth_storage.dart';
 
 class ResetPasswordScreen extends StatefulWidget {
   const ResetPasswordScreen({Key? key}) : super(key: key);
@@ -13,8 +15,69 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   final TextEditingController _confirmPasswordController = TextEditingController();
 
   bool _obscureCurrent = true;
-  bool _obscureNew = true;
+  bool _obscureNew     = true;
   bool _obscureConfirm = true;
+  bool _loading        = false;
+  String? _errorMessage;
+  String? _successMessage;
+
+  Future<void> _resetPassword() async {
+    final current = _currentPasswordController.text.trim();
+    final newPass = _newPasswordController.text.trim();
+    final confirm = _confirmPasswordController.text.trim();
+
+    if (current.isEmpty || newPass.isEmpty || confirm.isEmpty) {
+      setState(() { _errorMessage = 'Please fill in all fields'; _successMessage = null; });
+      return;
+    }
+    if (newPass != confirm) {
+      setState(() { _errorMessage = 'New passwords do not match'; _successMessage = null; });
+      return;
+    }
+    if (newPass.length < 6) {
+      setState(() { _errorMessage = 'New password must be at least 6 characters'; _successMessage = null; });
+      return;
+    }
+
+    setState(() { _loading = true; _errorMessage = null; _successMessage = null; });
+
+    final token = await AuthStorage.getToken();
+    if (token == null) {
+      setState(() { _loading = false; _errorMessage = 'Not logged in'; });
+      return;
+    }
+
+    final result = await ApiService.resetPassword(
+      token:           token,
+      currentPassword: current,
+      newPassword:     newPass,
+    );
+
+    if (!mounted) return;
+
+    if (result == null) {
+      setState(() {
+        _loading      = false;
+        _errorMessage = 'Could not connect to server. Check your connection.';
+      });
+      return;
+    }
+
+    if (result['ok'] == true) {
+      setState(() {
+        _loading        = false;
+        _successMessage = 'Password updated successfully';
+      });
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) Navigator.pop(context);
+      });
+    } else {
+      setState(() {
+        _loading      = false;
+        _errorMessage = result['error'] as String? ?? 'Password reset failed';
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -96,54 +159,26 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
 
                   const SizedBox(height: 40),
 
+                  // Feedback messages
+                  if (_errorMessage != null) ...[
+                    Text(_errorMessage!,
+                        style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                        textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                  ],
+                  if (_successMessage != null) ...[
+                    Text(_successMessage!,
+                        style: const TextStyle(color: Colors.green, fontSize: 13),
+                        textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                  ],
+
                   // Reset Button
                   SizedBox(
                     width: double.infinity,
                     height: 48,
                     child: ElevatedButton(
-                      onPressed: () {
-                        String current = _currentPasswordController.text.trim();
-                        String newPass = _newPasswordController.text.trim();
-                        String confirm = _confirmPasswordController.text.trim();
-
-                        // 1️⃣ Check empty fields
-                        if (current.isEmpty || newPass.isEmpty || confirm.isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please fill in all fields'),
-                              backgroundColor: Colors.redAccent,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          return;
-                        }
-
-                        // 2️⃣ Check if new passwords match
-                        if (newPass != confirm) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('New Password and Confirm Password do not match'),
-                              backgroundColor: Colors.redAccent,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                          return;
-                        }
-
-                        // 3️⃣ Success
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Password has been updated'),
-                            backgroundColor: Colors.green,
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
-
-                        // 4️⃣ Navigate back to Home after short delay
-                        Future.delayed(const Duration(seconds: 1), () {
-                          Navigator.pop(context);
-                        });
-                      },
+                      onPressed: _loading ? null : _resetPassword,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
                         foregroundColor: Colors.white,
@@ -152,13 +187,16 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
                         ),
                         elevation: 0,
                       ),
-                      child: const Text(
-                        'Reset Password',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: _loading
+                          ? const SizedBox(
+                              height: 20, width: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : const Text(
+                              'Reset Password',
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
                     ),
                   ),
 

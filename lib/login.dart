@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'register.dart';
 import 'homepage.dart';
+import 'api_service.dart';
+import 'auth_storage.dart';
+import 'plan_storage.dart';
+import 'sync_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({Key? key}) : super(key: key);
@@ -13,6 +17,56 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  bool _loading         = false;
+  String? _errorMessage;
+
+  Future<void> _login() async {
+    final username = _usernameController.text.trim();
+    final password = _passwordController.text.trim();
+
+    if (username.isEmpty || password.isEmpty) {
+      setState(() => _errorMessage = 'Please enter both username and password');
+      return;
+    }
+
+    setState(() { _loading = true; _errorMessage = null; });
+
+    final result = await ApiService.login(username: username, password: password);
+
+    if (!mounted) return;
+
+    if (result == null) {
+      setState(() {
+        _loading      = false;
+        _errorMessage = 'Could not connect to server. Check your connection.';
+      });
+      return;
+    }
+
+    final token = result['token'] as String?;
+    final user  = result['user']  as Map<String, dynamic>?;
+
+    if (token == null || user == null) {
+      setState(() {
+        _loading      = false;
+        _errorMessage = result['error'] as String? ?? 'Invalid username or password';
+      });
+      return;
+    }
+
+    await AuthStorage.save(token: token, user: user);
+
+    // Background sync: push local plans → pull new ones from server.
+    // Do not await — let the user land on HomePage immediately.
+    SyncService.fullSync();
+
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const HomePage()),
+      (r) => false,
+    );
+  }
 
   @override
   void dispose() {
@@ -144,29 +198,22 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 40),
 
+                  // Error message
+                  if (_errorMessage != null) ...[
+                    Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 13),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
                   // Log In button
                   SizedBox(
                     width: double.infinity,
                     height: 48,
                     child: ElevatedButton(
-                      onPressed: () {
-                        String username = _usernameController.text.trim();
-                        String password = _passwordController.text.trim();
-
-                        if (username.isEmpty || password.isEmpty) {
-                          // Show warning if any field is empty
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Please enter both username and password'),
-                              backgroundColor: Colors.redAccent,
-                              duration: Duration(seconds: 2),
-                            ),
-                          );
-                        } else {
-                          // Add your login logic here
-                          Navigator.push(context, MaterialPageRoute(builder: (_) => const HomePage()));
-                        }
-                      },
+                      onPressed: _loading ? null : _login,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.black87,
                         foregroundColor: Colors.white,
@@ -175,13 +222,16 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         elevation: 0,
                       ),
-                      child: const Text(
-                        'Log In',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: _loading
+                          ? const SizedBox(
+                              height: 20, width: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: Colors.white))
+                          : const Text(
+                              'Log In',
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w600),
+                            ),
                     ),
                   ),
                   const SizedBox(height: 16),

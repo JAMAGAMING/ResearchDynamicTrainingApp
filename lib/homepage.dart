@@ -4,6 +4,7 @@ import 'login.dart';
 import 'reset_password.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
+import 'auth_storage.dart';
 import 'create_training_plan_screen.dart';
 import 'select_training_plan_screen.dart' hide WorkoutSessionScreen;
 import 'workout_session_screen.dart';
@@ -17,16 +18,28 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   TrainingPlan? _activePlan;
+  String        _username = '';
+  String        _fullName = '';
 
   @override
   void initState() {
     super.initState();
     _loadPlan();
+    _loadUser();
   }
 
   Future<void> _loadPlan() async {
     final plan = await PlanStorage.loadActive();
     if (mounted) setState(() => _activePlan = plan);
+  }
+
+  Future<void> _loadUser() async {
+    final username = await AuthStorage.getUsername();
+    final fullName = await AuthStorage.getFullName();
+    if (mounted) setState(() {
+      _username = username ?? '';
+      _fullName = fullName ?? '';
+    });
   }
 
   @override
@@ -44,8 +57,8 @@ class _HomePageState extends State<HomePage> {
         actions: [
           Row(
             children: [
-              const Text('Username',
-                  style: TextStyle(color: Colors.white, fontSize: 16)),
+              Text(_username,
+                  style: const TextStyle(color: Colors.white, fontSize: 16)),
               const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(Icons.person),
@@ -104,21 +117,26 @@ class _HomePageState extends State<HomePage> {
                   child: Icon(Icons.person, size: 50, color: Colors.white),
                 ),
                 const SizedBox(height: 16),
-                const Text('Full Name',
-                    style: TextStyle(
+                Text(_fullName.isEmpty ? 'Full Name' : _fullName,
+                    style: const TextStyle(
                         fontSize: 18, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 4),
-                const Text('Username',
-                    style: TextStyle(fontSize: 14, color: Colors.grey)),
+                Text(_username.isEmpty ? 'Username' : _username,
+                    style: const TextStyle(fontSize: 14, color: Colors.grey)),
                 const SizedBox(height: 20),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black),
-                  onPressed: () => Navigator.pushAndRemoveUntil(
+                  onPressed: () async {
+                    await AuthStorage.clear();
+                    await PlanStorage.clearAll();
+                    if (!context.mounted) return;
+                    Navigator.pushAndRemoveUntil(
                       context,
-                      MaterialPageRoute(
-                          builder: (_) => const LoginScreen()),
-                          (r) => false),
+                      MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      (r) => false,
+                    );
+                  },
                   child: const Text('Log Out',
                       style: TextStyle(color: Colors.white)),
                 ),

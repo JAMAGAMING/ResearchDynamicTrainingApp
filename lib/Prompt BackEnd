@@ -1,0 +1,15 @@
+I need to make a working back end my app
+
+Features:
+
+Login
+Account Registering
+Account Reset Password
+Synced Training Plans to Account
+The Training Plans Locally cannot be overwritten by Training Plans stored from the database, instead the database only houses the training plans you made locally (kinda like uploading) , once you connected to the database server by refreshing the select training plan, it will only receive the training plans from the server IF that training plan doesn't exist locally yet, BUT the app can make modifications to the training plan locally and overwrite the Training plan stored on the database whenever you make changes to your training plan such as completing training days, moving training days, adjusting intensity and etc. this ensures that multiple devices can be used to access your training plans
+you can also delete training plans on the database when you delete them locally if youre connected to the backend
+the backend is a dedicated server which only houses the account, and the training plans for each account
+
+all of the logic and heavy calculations are done in the app, not on the server so it wont take a toll on the backend hoster
+
+Probably need to setup prisma for this as the database
