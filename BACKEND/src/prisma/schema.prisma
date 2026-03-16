@@ -1,0 +1,47 @@
+// prisma/schema.prisma
+//
+// SQLite is used for easy self-hosting (single file DB, no separate process).
+// To switch to PostgreSQL: change provider to "postgresql" and update DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+//  User
+// ─────────────────────────────────────────────
+model User {
+  id           Int            @id @default(autoincrement())
+  username     String         @unique
+  fullName     String
+  passwordHash String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  trainingPlans TrainingPlan[]
+}
+
+// ─────────────────────────────────────────────
+//  TrainingPlan
+//
+//  The full plan JSON is stored as a single blob (planJson).
+//  The server never parses the contents — it just stores and
+//  returns it. All logic stays in the Flutter app.
+//
+//  planId matches the app-generated id (e.g. "1718000000000_1234")
+//  so the app can upsert by its own id without needing the DB row id.
+// ─────────────────────────────────────────────
+model TrainingPlan {
+  id         Int      @id @default(autoincrement())
+  planId     String                    // app-generated UUID-like id
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planJson   String                    // full plan serialized as JSON string
+  updatedAt  DateTime @updatedAt       // used to pick the newest version on conflict
+
+  @@unique([userId, planId])           // one plan per user per planId
+}
