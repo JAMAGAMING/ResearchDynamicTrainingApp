@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
+import 'auth_storage.dart';
 
 // ─────────────────────────────────────────────
 //  CreateTrainingPlanScreen
@@ -101,9 +102,14 @@ class _CreateTrainingPlanScreenState extends State<CreateTrainingPlanScreen> {
       calorieIntake: _calorieIntake!,
     );
 
-    final today = DateTime.now();
-    final start = DateTime(today.year, today.month, today.day);
-    final plan  = TrainingPlanGenerator.generate(profile, start);
+    final today  = DateTime.now();
+    final start  = DateTime(today.year, today.month, today.day);
+    final userId = await AuthStorage.getUserId();
+    final plan   = TrainingPlanGenerator.generate(
+      profile,
+      start,
+      ownerId: userId ?? TrainingPlan.ownerOffline,
+    );
     await PlanStorage.save(plan);
 
     setState(() => _generating = false);

@@ -6,7 +6,8 @@ import 'training_plan_model.dart';
 import 'plan_storage.dart';
 import 'auth_storage.dart';
 import 'create_training_plan_screen.dart';
-import 'select_training_plan_screen.dart' hide WorkoutSessionScreen;
+import 'select_training_plan_screen.dart';
+import 'sync_service.dart';
 import 'workout_session_screen.dart';
 
 class HomePage extends StatefulWidget {
@@ -21,11 +22,27 @@ class _HomePageState extends State<HomePage> {
   String        _username = '';
   String        _fullName = '';
 
+  final _stepsKey = GlobalKey<_TotalKmWidgetState>();
+
   @override
   void initState() {
     super.initState();
     _loadPlan();
     _loadUser();
+    _syncInBackground();
+  }
+
+  Future<void> _syncInBackground() async {
+    final pulled = await SyncService.pullFromServer();
+    if (pulled > 0 && mounted) _loadPlan(); // refresh active plan if new data came in
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _stepsKey.currentState?.reload();
+    });
   }
 
   Future<void> _loadPlan() async {
@@ -57,7 +74,7 @@ class _HomePageState extends State<HomePage> {
         actions: [
           Row(
             children: [
-              Text(_username,
+              Text(_username.isEmpty ? 'Guest' : _username,
                   style: const TextStyle(color: Colors.white, fontSize: 16)),
               const SizedBox(width: 8),
               IconButton(
@@ -76,11 +93,15 @@ class _HomePageState extends State<HomePage> {
           activePlan: _activePlan,
           onPlanUpdated: (p) => setState(() => _activePlan = p),
           onSelectPlan: _openSelectPlan,
+          onSessionComplete: () => _stepsKey.currentState?.reload(),
+          stepsKey: _stepsKey,
         )
             : _PortraitLayout(
           activePlan: _activePlan,
           onPlanUpdated: (p) => setState(() => _activePlan = p),
           onSelectPlan: _openSelectPlan,
+          onSessionComplete: () => _stepsKey.currentState?.reload(),
+          stepsKey: _stepsKey,
         ),
       ),
     );
@@ -94,7 +115,10 @@ class _HomePageState extends State<HomePage> {
             SelectTrainingPlanScreen(activePlanId: _activePlan?.id),
       ),
     );
-    if (mounted) setState(() => _activePlan = selected);
+    if (mounted) {
+      setState(() => _activePlan = selected);
+      _stepsKey.currentState?.reload();
+    }
   }
 
   void _showProfileDialog(BuildContext context) {
@@ -128,13 +152,14 @@ class _HomePageState extends State<HomePage> {
                   style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black),
                   onPressed: () async {
+                    // Only clear the auth token — never wipe local plans.
+                    // ownerId filtering ensures each session only sees its own plans.
                     await AuthStorage.clear();
-                    await PlanStorage.clearAll();
                     if (!context.mounted) return;
                     Navigator.pushAndRemoveUntil(
                       context,
                       MaterialPageRoute(builder: (_) => const LoginScreen()),
-                      (r) => false,
+                          (r) => false,
                     );
                   },
                   child: const Text('Log Out',
@@ -168,22 +193,29 @@ class _PortraitLayout extends StatelessWidget {
   final TrainingPlan? activePlan;
   final void Function(TrainingPlan) onPlanUpdated;
   final VoidCallback onSelectPlan;
+  final VoidCallback onSessionComplete;
+  final GlobalKey<_TotalKmWidgetState> stepsKey;
 
   const _PortraitLayout({
     required this.activePlan,
     required this.onPlanUpdated,
     required this.onSelectPlan,
+    required this.onSessionComplete,
+    required this.stepsKey,
   });
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        SizedBox(height: 140, child: _TotalKmWidget()),
+        SizedBox(height: 140, child: _TotalKmWidget(key: stepsKey)),
         const SizedBox(height: 12),
         SizedBox(
             height: 140,
-            child: _TrainingOfTheDayWidget(activePlan: activePlan)),
+            child: _TrainingOfTheDayWidget(
+              activePlan: activePlan,
+              onSessionComplete: onSessionComplete,
+            )),
         const SizedBox(height: 12),
         SizedBox(
             height: 140,
@@ -206,11 +238,15 @@ class _LandscapeLayout extends StatelessWidget {
   final TrainingPlan? activePlan;
   final void Function(TrainingPlan) onPlanUpdated;
   final VoidCallback onSelectPlan;
+  final VoidCallback onSessionComplete;
+  final GlobalKey<_TotalKmWidgetState> stepsKey;
 
   const _LandscapeLayout({
     required this.activePlan,
     required this.onPlanUpdated,
     required this.onSelectPlan,
+    required this.onSessionComplete,
+    required this.stepsKey,
   });
 
   @override
@@ -223,7 +259,7 @@ class _LandscapeLayout extends StatelessWidget {
             Expanded(
               child: Column(
                 children: [
-                  SizedBox(height: 140, child: _TotalKmWidget()),
+                  SizedBox(height: 140, child: _TotalKmWidget(key: stepsKey)),
                   const SizedBox(height: 12),
                   SizedBox(
                       height: 140,
@@ -239,7 +275,9 @@ class _LandscapeLayout extends StatelessWidget {
                   SizedBox(
                       height: 140,
                       child: _TrainingOfTheDayWidget(
-                          activePlan: activePlan)),
+                        activePlan: activePlan,
+                        onSessionComplete: onSessionComplete,
+                      )),
                   const SizedBox(height: 12),
                   SizedBox(
                       height: 140,
@@ -422,24 +460,22 @@ Widget _planOptionTile({
 // ─────────────────────────────────────────────
 
 // ─────────────────────────────────────────────
-//  _TotalKmWidget
+//  _TotalStepsWidget
 //
-//  Reads total meters from PlanStorage and displays
-//  the value in km (1 decimal place).
-//  Refreshes every time the widget is re-inserted into
-//  the tree (i.e. when the user navigates back to home
-//  after a session), so the count is always up-to-date.
+//  Reads lifetime step count from PlanStorage.
+//  Refreshes when the user navigates back to home
+//  after a session.
 // ─────────────────────────────────────────────
 
 class _TotalKmWidget extends StatefulWidget {
-  const _TotalKmWidget();
+  const _TotalKmWidget({super.key});
 
   @override
   State<_TotalKmWidget> createState() => _TotalKmWidgetState();
 }
 
 class _TotalKmWidgetState extends State<_TotalKmWidget> {
-  double _totalKm = 0.0;
+  int _totalSteps = 0;
 
   @override
   void initState() {
@@ -448,42 +484,57 @@ class _TotalKmWidgetState extends State<_TotalKmWidget> {
   }
 
   Future<void> _load() async {
-    final meters = await PlanStorage.loadTotalMeters();
-    if (mounted) setState(() => _totalKm = meters / 1000.0);
+    final plan = await PlanStorage.loadActive();
+    if (mounted) setState(() => _totalSteps = plan?.totalSteps ?? 0);
   }
 
-  String get _display {
-    if (_totalKm >= 100) return '${_totalKm.toStringAsFixed(0)} km';
-    if (_totalKm >= 10)  return '${_totalKm.toStringAsFixed(1)} km';
-    return '${_totalKm.toStringAsFixed(2)} km';
+  void reload() => _load();
+
+  String get _stepsDisplay {
+    if (_totalSteps >= 1000000) return '${(_totalSteps / 1000000).toStringAsFixed(1)}M';
+    if (_totalSteps >= 1000)    return '${(_totalSteps / 1000).toStringAsFixed(1)}K';
+    return '$_totalSteps';
+  }
+
+  String get _kmDisplay {
+    final km = _totalSteps * 0.000762;
+    return '${km.toStringAsFixed(2)} km';
   }
 
   @override
   Widget build(BuildContext context) {
     return _HomeCard(
-      onTap: _load, // tap to manually refresh
+      onTap: _load,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Total Kilometers Ran',
+          const Text('Total Steps',
               style: TextStyle(
                   fontSize: 13,
                   color: Colors.black54,
                   fontWeight: FontWeight.w500)),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           FittedBox(
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
               children: [
-                const Icon(Icons.directions_run, size: 28, color: Colors.black),
-                const SizedBox(width: 8),
-                Text(_display,
+                const Icon(Icons.directions_walk, size: 26, color: Colors.black),
+                const SizedBox(width: 6),
+                Text(_stepsDisplay,
                     style: const TextStyle(
                         fontSize: 36,
                         fontWeight: FontWeight.bold,
                         color: Colors.black)),
+                const SizedBox(width: 10),
+                Text(_kmDisplay,
+                    style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black45)),
               ],
             ),
           ),
@@ -495,7 +546,11 @@ class _TotalKmWidgetState extends State<_TotalKmWidget> {
 
 class _TrainingOfTheDayWidget extends StatefulWidget {
   final TrainingPlan? activePlan;
-  const _TrainingOfTheDayWidget({required this.activePlan});
+  final VoidCallback onSessionComplete;
+  const _TrainingOfTheDayWidget({
+    required this.activePlan,
+    required this.onSessionComplete,
+  });
 
   @override
   State<_TrainingOfTheDayWidget> createState() => _TrainingOfTheDayWidgetState();
@@ -517,16 +572,17 @@ class _TrainingOfTheDayWidgetState extends State<_TrainingOfTheDayWidget> {
         _showInfoDialog(today, workout);
         return;
       }
-      // After returning from the session, the km widget will reload in
-      // the next build cycle because the parent rebuilds on resume.
       await Navigator.push(
         context,
         MaterialPageRoute(
           builder: (_) => WorkoutSessionScreen(workout: workout, date: date),
         ),
       );
-      // Trigger a parent rebuild so _TotalKmWidget reloads its value.
-      if (mounted) setState(() {});
+      // Steps were flushed explicitly before pop — reload immediately.
+      if (mounted) {
+        setState(() {});
+        widget.onSessionComplete();
+      }
       return;
     }
 

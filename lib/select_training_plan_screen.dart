@@ -53,17 +53,15 @@ class _SelectTrainingPlanScreenState
     });
   }
 
-  // ── Server sync ─────────────────────────────
-  // Pushes all local plans, then pulls any new plans from the server.
+  // ── Pull plans from server that are missing locally ─────────────────────
   // Shows a subtle indicator in the AppBar while running.
   Future<void> _syncWithServer() async {
     if (_syncing) return;
     setState(() => _syncing = true);
 
-    final pulled = await SyncService.fullSync();
+    final pulled = await SyncService.pullFromServer();
 
     if (!mounted) return;
-    // If new plans were pulled, reload the local list.
     if (pulled > 0) await _loadPlans();
 
     setState(() => _syncing = false);
@@ -651,8 +649,11 @@ class _AdjustIntensityDialogState
       startDate:             widget.plan.startDate,
       tim:                   widget.plan.tim,
       workouts:              newWorkouts,
-      intensityDeltaSeconds: 0,   // reset — new values are the new baseline
-      setsDelta:             0,   // reset — new sets are the new baseline
+      intensityDeltaSeconds: 0,
+      setsDelta:             0,
+      totalSteps:            widget.plan.totalSteps,
+      ownerId:               widget.plan.ownerId,
+      lastModifiedAt:        DateTime.now().toUtc(),
     );
 
     await PlanStorage.save(updated);
@@ -1086,6 +1087,9 @@ class _EditSpecificDaysDialogState
       workouts:              rescheduled,
       intensityDeltaSeconds: widget.plan.intensityDeltaSeconds,
       setsDelta:             widget.plan.setsDelta,
+      totalSteps:            widget.plan.totalSteps,
+      ownerId:               widget.plan.ownerId,
+      lastModifiedAt:        DateTime.now().toUtc(),
     );
 
     await PlanStorage.save(updated);

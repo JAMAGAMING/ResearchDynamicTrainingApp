@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
-import 'login.dart'; // Import your login.dart file
+import 'login.dart';
+import 'api_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await ApiService.loadSavedBaseUrl();
   runApp(const MyApp());
 }
 
@@ -16,7 +19,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
-      home: const LoginScreen(), // Set your LoginScreen as the home
+      home: const LoginScreen(),
     );
   }
 }

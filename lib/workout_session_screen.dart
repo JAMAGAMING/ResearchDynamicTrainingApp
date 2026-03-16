@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' show asin, cos, pi, sin, sqrt;
+import 'dart:math' show sqrt;
 import 'package:flutter/material.dart';
 import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
-import 'package:geolocator/geolocator.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'training_plan_model.dart';
 import 'plan_storage.dart';
@@ -40,27 +40,17 @@ import 'plan_storage.dart';
 //  • Ticker fires every 10 ms for a ~2-decimal countdown (M:SS.cs).
 //  • SessionProgress persists centiseconds so resume is accurate.
 //
-//  GPS distance tracking:
-//  • Tracking is active ONLY during Run step countdowns (not paused,
-//    not walk/warmup/cooldown/stretch).
-//  • Uses geolocator's position stream; consecutive fixes are
-//    accumulated with the Haversine formula for accuracy.
-//  • Requires location permission (requested on screen open).
-//    If denied, session proceeds normally — km counter is unaffected.
-//  • Accumulated meters are flushed to PlanStorage on dispose so
-//    partial sessions are credited even if the user navigates away.
+//  Step counting (accelerometer):
+//  • Uses sensors_plus — no permissions needed.
+//  • Works indoors and outdoors, zero GPS battery drain.
+//  • Detects steps via magnitude peak detection on the 3-axis
+//    acceleration vector. Only counts during Run step countdowns.
+//  • Displays raw step count (e.g. 0 steps, 142 steps).
+//  • Steps flushed to PlanStorage on dispose.
 //
 //  Dependencies (add to pubspec.yaml):
 //    flutter_ringtone_player: ^4.0.0
-//    geolocator: ^13.0.0
-//
-//  Android AndroidManifest.xml:
-//    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-//    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-//
-//  iOS Info.plist:
-//    <key>NSLocationWhenInUseUsageDescription</key>
-//    <string>Used to track distance during your run.</string>
+//    sensors_plus: ^5.0.0
 // ─────────────────────────────────────────────
 
 // ─────────────────────────────────────────────
@@ -139,13 +129,19 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   bool   _isPaused  = false;
   Timer? _ticker;
 
-  // ── GPS tracking ──────────────────────────────
-  // Active only while a Run step's countdown is running (not paused).
-  // Flushed to PlanStorage.addMeters() on dispose.
-  StreamSubscription<Position>? _positionSub;
-  Position?                     _lastPosition;
-  double                        _sessionMeters = 0.0;
-  bool                          _gpsAvailable  = false;
+  // ── Accelerometer step counter ───────────────
+  //
+  //  Uses a dynamic threshold: rolling window average of net acceleration
+  //  + 1.0 m/s². Adapts to how the user holds their phone automatically.
+  static const int    _stepCooldownMs = 350;
+  static const int    _windowSize     = 20;
+  static const double _gravity        = 9.81;
+
+  StreamSubscription<AccelerometerEvent>? _accelSub;
+  bool              _stepTracking = false;
+  int               _stepCount    = 0;
+  DateTime          _lastStepTime = DateTime(2000);
+  final List<double> _window      = [];
 
   @override
   void initState() {
@@ -153,16 +149,16 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     _steps   = _buildSteps(widget.workout);
     _checked = List.filled(_steps.length, false);
     _restoreProgress();
-    _requestLocationPermission();
+    _startAccelerometer();
   }
 
   @override
   void dispose() {
     _ticker?.cancel();
     _ticker = null;
-    _stopGps();
-    // Flush GPS meters earned this session (even partial).
-    PlanStorage.addMeters(_sessionMeters);
+    _stopAccelerometer();
+    // Steps are flushed before Navigator.pop in both exit paths (_onBackPressed
+    // and the completion dialog). dispose() must not flush again.
     if (!_checked.every((c) => c)) {
       SessionProgress.save(
         date:                  widget.date,
@@ -204,85 +200,51 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     });
   }
 
-  // ── GPS helpers ───────────────────────────────
+  // ── Accelerometer helpers ─────────────────────
+  //  Logic directly from reference StepVisualizer implementation.
 
-  /// Requests location permission once on screen open.
-  /// Sets [_gpsAvailable] so we know whether to start tracking.
-  Future<void> _requestLocationPermission() async {
-    try {
-      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return;
+  void _startAccelerometer() {
+    _accelSub = accelerometerEventStream().listen((AccelerometerEvent event) {
+      // Compute net acceleration (remove gravity).
+      final double magnitude = sqrt(
+        event.x * event.x + event.y * event.y + event.z * event.z,
+      );
+      final double value = magnitude - _gravity;
 
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.deniedForever) return;
-      if (permission == LocationPermission.denied)        return;
+      // Maintain rolling window.
+      _window.add(value);
+      if (_window.length > _windowSize) _window.removeAt(0);
 
-      if (mounted) { print('GPS available: true'); setState(() => _gpsAvailable = true); }
-    } catch (_) {
-      // Permission plugin not available in test/web — degrade gracefully.
-    }
-  }
+      // Only count steps during Run timers.
+      if (!_stepTracking) return;
 
-  /// Starts the GPS position stream for a Run step.
-  /// No-ops if GPS is unavailable or already running.
-  void _startGps() {
-    if (!_gpsAvailable || _positionSub != null) return;
-    _lastPosition = null; // reset reference point for this run interval
+      final double avg              = _window.reduce((a, b) => a + b) / _window.length;
+      final double dynamicThreshold = avg + 2.5;
 
-    const locationSettings = LocationSettings(
-      accuracy:       LocationAccuracy.high,
-      distanceFilter: 0, // accept every fix — we filter by accuracy instead
-    );
+      final DateTime now = DateTime.now();
 
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen((Position pos) {
-      print('GPS fix: lat=${pos.latitude}, lon=${pos.longitude}, accuracy=${pos.accuracy}m');
-
-      if (pos.accuracy > 20.0) {
-        print('Fix rejected — accuracy too poor');
-        return;
+      if (value > dynamicThreshold &&
+          now.difference(_lastStepTime).inMilliseconds > _stepCooldownMs) {
+        _stepCount++;
+        _lastStepTime = now;
       }
 
-      if (_lastPosition != null) {
-        final delta = _haversineMeters(_lastPosition!, pos);
-        final elapsedSeconds = pos.timestamp
-            .difference(_lastPosition!.timestamp)
-            .inMilliseconds / 1000.0;
-        final maxReasonable = elapsedSeconds * 10.0;
-        if (delta <= maxReasonable) {
-          _sessionMeters += delta;
-          print('Distance added: ${delta.toStringAsFixed(2)}m — total: ${_sessionMeters.toStringAsFixed(2)}m');
-        } else {
-          print('Fix rejected — speed lurch');
-        }
-      }
-      _lastPosition = pos;
-    }, onError: (_) {
-      _stopGps();
-    });
+      if (mounted) setState(() {});
+    }, onError: (_) {});
   }
 
-  /// Stops and cleans up the GPS stream.
-  void _stopGps() {
-    _positionSub?.cancel();
-    _positionSub  = null;
-    _lastPosition = null;
+  void _stopAccelerometer() {
+    _accelSub?.cancel();
+    _accelSub = null;
   }
 
-  /// Haversine formula — straight-line surface distance between two positions.
-  static double _haversineMeters(Position a, Position b) {
-    const r = 6371000.0; // Earth radius in metres
-    final lat1 = a.latitude  * pi / 180;
-    final lat2 = b.latitude  * pi / 180;
-    final dLat = (b.latitude  - a.latitude)  * pi / 180;
-    final dLon = (b.longitude - a.longitude) * pi / 180;
-    final h = sin(dLat / 2) * sin(dLat / 2) +
-        cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2);
-    return 2 * r * asin(sqrt(h));
+  void _enableStepTracking() {
+    _window.clear(); // clear stale data so threshold starts fresh
+    _stepTracking = true;
+  }
+
+  void _disableStepTracking() {
+    _stepTracking = false;
   }
 
   // ── Build flat sequential step list ──────────
@@ -366,12 +328,9 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
 
   void _startTimer(int i) {
     _ticker?.cancel();
-    // Start GPS only for Run steps; stop it for any other step type.
-    if (_steps[i].type == _T.run) {
-      _startGps();
-    } else {
-      _stopGps();
-    }
+
+    _enableStepTracking();
+
     setState(() {
       _activeIndex = i;
       _isPaused    = false;
@@ -383,15 +342,12 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   void _pauseTimer() {
     _ticker?.cancel();
     _ticker = null;
-    _stopGps(); // pause GPS — don't count standing-still distance
+    _disableStepTracking();
     setState(() => _isPaused = true);
   }
 
   void _resumeTimer() {
-    // Resume GPS only if this is a Run step.
-    if (_activeIndex != null && _steps[_activeIndex!].type == _T.run) {
-      _startGps();
-    }
+    _enableStepTracking();
     setState(() => _isPaused = false);
     _startTicker(_activeIndex!);
   }
@@ -399,7 +355,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   void _cancelTimer() {
     _ticker?.cancel();
     _ticker = null;
-    _stopGps();
+    _disableStepTracking();
     setState(() {
       _activeIndex = null;
       _remaining   = 0;
@@ -421,7 +377,7 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
 
   void _onTimerFinished(int i) {
     FlutterRingtonePlayer().playAlarm(looping: false);
-    _stopGps(); // step ended — GPS off until the next Run step starts
+    _disableStepTracking();
 
     final isStretch = _steps[i].type == _T.stretch;
 
@@ -499,11 +455,16 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     }
 
     final updatedPlan = TrainingPlan(
-      id:        plan.id,
-      profile:   plan.profile,
-      startDate: plan.startDate,
-      tim:       plan.tim,
-      workouts:  updatedWorkouts,
+      id:                    plan.id,
+      profile:               plan.profile,
+      startDate:             plan.startDate,
+      tim:                   plan.tim,
+      workouts:              updatedWorkouts,
+      intensityDeltaSeconds: plan.intensityDeltaSeconds,
+      setsDelta:             plan.setsDelta,
+      totalSteps:            plan.totalSteps,
+      ownerId:               plan.ownerId,
+      lastModifiedAt:        DateTime.now().toUtc(),
     );
 
     await PlanStorage.save(updatedPlan);
@@ -552,7 +513,13 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12)),
                   ),
-                  onPressed: () {
+                  onPressed: () async {
+                    // Flush steps before leaving so homepage reload sees the update.
+                    if (_stepCount > 0) {
+                      await PlanStorage.addStepsToActivePlan(_stepCount);
+                      _stepCount = 0;
+                    }
+                    if (!mounted) return;
                     Navigator.pop(context); // close dialog
                     Navigator.pop(context); // close session screen
                   },
@@ -570,6 +537,54 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
     );
   }
 
+  // ── Back button — confirm + flush steps ─────────
+  Future<void> _onBackPressed() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Leave Workout?',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text(
+          'Your progress will be cleared and steps will be saved.',
+          style: TextStyle(color: Colors.black54),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Stay', style: TextStyle(color: Colors.black)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Leave',
+                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !mounted) return;
+
+    // Cancel any running timer.
+    _ticker?.cancel();
+    _ticker = null;
+    _disableStepTracking();
+    _stopAccelerometer();
+
+    // Flush steps to the active plan now — before Navigator.pop triggers dispose.
+    if (_stepCount > 0) {
+      await PlanStorage.addStepsToActivePlan(_stepCount);
+      _stepCount = 0; // zero out so dispose() doesn't double-count
+    }
+
+    // Clear saved session progress so the workout resets cleanly next open.
+    await SessionProgress.clear(widget.date);
+
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+
   // ── Date label ────────────────────────────────
   String get _dateLabel {
     const days   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -582,79 +597,89 @@ class _WorkoutSessionScreenState extends State<WorkoutSessionScreen> {
   // ── Build ─────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
+    return PopScope(
+      canPop: false, // block system back gesture / button
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _onBackPressed();
+      },
+      child: Scaffold(
         backgroundColor: Colors.black,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text("Today's Workout",
-            style: TextStyle(color: Colors.white)),
-        centerTitle: true,
-      ),
-      body: Column(
-        children: [
-          _ProgressHeader(
-            dateLabel:     _dateLabel,
-            progress:      _progress,
-            doneCount:     _doneCount,
-            totalCount:    _steps.length,
-            sessionMeters: _sessionMeters,
-            gpsAvailable:  _gpsAvailable,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          iconTheme: const IconThemeData(color: Colors.white),
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: _onBackPressed,
           ),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-              itemCount: _steps.length,
-              itemBuilder: (_, i) {
-                final step      = _steps[i];
-                final isChecked = _checked[i];
-                final isLocked  = !_canCheck(i);
-                final isTiming  = _activeIndex == i;
-                final showSetHeader = step.type == _T.run;
+          title: const Text("Today's Workout",
+              style: TextStyle(color: Colors.white)),
+          centerTitle: true,
+        ),
+        body: Column(
+          children: [
+            _ProgressHeader(
+              dateLabel:  _dateLabel,
+              progress:   _progress,
+              doneCount:  _doneCount,
+              totalCount: _steps.length,
+              stepCount:  _stepCount,
+            ),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                itemCount: _steps.length,
+                itemBuilder: (_, i) {
+                  final step      = _steps[i];
+                  final isChecked = _checked[i];
+                  final isLocked  = !_canCheck(i);
+                  final isTiming  = _activeIndex == i;
+                  final showSetHeader = step.type == _T.run;
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (showSetHeader) ...[
-                      const SizedBox(height: 16),
-                      Padding(
-                        padding: const EdgeInsets.only(left: 4, bottom: 6),
-                        child: Text(
-                          'Set ${step.setNum} of ${step.totalSets}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.0,
-                            color: isChecked
-                                ? Colors.green.shade400
-                                : isLocked
-                                ? Colors.white24
-                                : Colors.white54,
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (showSetHeader) ...[
+                        const SizedBox(height: 16),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 6),
+                          child: Text(
+                            'Set ${step.setNum} of ${step.totalSets}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.0,
+                              color: isChecked
+                                  ? Colors.green.shade400
+                                  : isLocked
+                                  ? Colors.white24
+                                  : Colors.white54,
+                            ),
                           ),
                         ),
-                      ),
-                    ] else if (step.type != _T.walk)
-                      const SizedBox(height: 12),
+                      ] else if (step.type != _T.walk)
+                        const SizedBox(height: 12),
 
-                    _StepTile(
-                      step:        step,
-                      isChecked:   isChecked,
-                      isLocked:    isLocked,
-                      isTiming:    isTiming,
-                      isPaused:    _isPaused && isTiming,
-                      remainingCs: isTiming ? _remaining : step.timerCentiseconds,
-                      onBodyTap:   () => _onBodyTap(i),
-                      onCheckTap:  () => _onCheckTap(i),
-                      onResetTap:  () => _onResetTap(i),
-                    ),
-                  ],
-                );
-              },
+                      _StepTile(
+                        step:        step,
+                        isChecked:   isChecked,
+                        isLocked:    isLocked,
+                        isTiming:    isTiming,
+                        isPaused:    _isPaused && isTiming,
+                        remainingCs: isTiming ? _remaining : step.timerCentiseconds,
+                        onBodyTap:   () => _onBodyTap(i),
+                        onCheckTap:  () => _onCheckTap(i),
+                        onResetTap:  () => _onResetTap(i),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
-          ),
-        ],
-      ),
-    );
+          ],
+        ),
+      ), // Scaffold
+    ); // PopScope
   }
 }
 
@@ -667,24 +692,15 @@ class _ProgressHeader extends StatelessWidget {
   final double progress;
   final int    doneCount;
   final int    totalCount;
-  final double sessionMeters;  // GPS distance accumulated this session
-  final bool   gpsAvailable;   // whether location permission was granted
+  final int stepCount; // accelerometer steps this session
 
   const _ProgressHeader({
     required this.dateLabel,
     required this.progress,
     required this.doneCount,
     required this.totalCount,
-    required this.sessionMeters,
-    required this.gpsAvailable,
+    required this.stepCount,
   });
-
-  String get _distanceLabel {
-    if (!gpsAvailable) return 'GPS off';
-    final km = sessionMeters / 1000.0;
-    if (km >= 1.0) return '${km.toStringAsFixed(2)} km';
-    return '${sessionMeters.toStringAsFixed(0)} m';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -708,25 +724,19 @@ class _ProgressHeader extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: gpsAvailable
-                          ? Colors.white.withOpacity(0.08)
-                          : Colors.white.withOpacity(0.04),
+                      color: Colors.white.withOpacity(0.08),
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          gpsAvailable ? Icons.gps_fixed : Icons.gps_off,
-                          size: 11,
-                          color: gpsAvailable ? Colors.white54 : Colors.white24,
-                        ),
+                        const Icon(Icons.directions_run, size: 11, color: Colors.white54),
                         const SizedBox(width: 4),
                         Text(
-                          _distanceLabel,
-                          style: TextStyle(
+                          '$stepCount steps',
+                          style: const TextStyle(
                             fontSize: 11,
-                            color: gpsAvailable ? Colors.white54 : Colors.white24,
+                            color: Colors.white54,
                             fontWeight: FontWeight.w600,
                           ),
                         ),

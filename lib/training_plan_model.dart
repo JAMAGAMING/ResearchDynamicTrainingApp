@@ -232,11 +232,18 @@ class TrainingPlan {
   /// Applied on top of the generator's original values. Default 0.
   final int setsDelta;
 
+  /// Total steps accumulated across all workout sessions for this plan.
+  final int totalSteps;
+
   /// UTC timestamp of the last local modification.
-  /// Stamped automatically by PlanStorage.save().
-  /// Used for conflict resolution during server sync:
-  /// whichever copy has the later lastModifiedAt wins.
   final DateTime lastModifiedAt;
+
+  /// Owner of this plan:
+  ///   "offline" → created in guest/offline mode, visible to all accounts on device
+  ///   "<userId>" → claimed by a specific account, only visible to that account
+  final String ownerId;
+
+  static const String ownerOffline = 'offline';
 
   TrainingPlan({
     required this.id,
@@ -246,6 +253,8 @@ class TrainingPlan {
     required this.workouts,
     this.intensityDeltaSeconds = 0,
     this.setsDelta             = 0,
+    this.totalSteps            = 0,
+    this.ownerId               = 'offline',
     DateTime? lastModifiedAt,
   }) : lastModifiedAt = lastModifiedAt ?? DateTime.utc(2000);
 
@@ -270,7 +279,9 @@ class TrainingPlan {
     'workouts': workouts.map((k, v) => MapEntry(k, v.toJson())),
     'intensityDeltaSeconds': intensityDeltaSeconds,
     'setsDelta':             setsDelta,
+    'totalSteps':            totalSteps,
     'lastModifiedAt':        lastModifiedAt.toUtc().toIso8601String(),
+    'ownerId':               ownerId,
   };
 
   factory TrainingPlan.fromJson(Map<String, dynamic> j) => TrainingPlan(
@@ -282,10 +293,11 @@ class TrainingPlan {
         .map((k, v) => MapEntry(k, DayWorkout.fromJson(v as Map<String, dynamic>))),
     intensityDeltaSeconds:  (j['intensityDeltaSeconds'] as int?) ?? 0,
     setsDelta:              (j['setsDelta']             as int?) ?? 0,
-    // Fallback to epoch so old saved plans always lose to a real server timestamp.
+    totalSteps:             (j['totalSteps']            as int?) ?? 0,
     lastModifiedAt: j['lastModifiedAt'] != null
         ? DateTime.parse(j['lastModifiedAt'] as String).toUtc()
         : DateTime.utc(2000),
+    ownerId:        (j['ownerId'] as String?) ?? 'offline',
   );
 
   String toJsonString()                        => jsonEncode(toJson());
@@ -392,6 +404,9 @@ class TrainingPlan {
       workouts:              extended,
       intensityDeltaSeconds: intensityDeltaSeconds,
       setsDelta:             setsDelta,
+      totalSteps:            totalSteps,
+      ownerId:               ownerId,
+      lastModifiedAt:        lastModifiedAt,
     );
   }
 }
@@ -439,7 +454,7 @@ class TrainingPlanGenerator {
     return '${now.millisecondsSinceEpoch}_$random';
   }
 
-  static TrainingPlan generate(UserProfile profile, DateTime startDate) {
+  static TrainingPlan generate(UserProfile profile, DateTime startDate, {String ownerId = 'offline'}) {
     final tim      = computeTIM(profile);
     final workouts = <String, DayWorkout>{};
 
@@ -481,6 +496,7 @@ class TrainingPlanGenerator {
       startDate: startDate,
       tim:       tim,
       workouts:  workouts,
+      ownerId:   ownerId,
     );
   }
 }

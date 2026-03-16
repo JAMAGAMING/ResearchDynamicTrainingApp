@@ -1,275 +1,166 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ─────────────────────────────────────────────
 //  ApiService
-//
-//  Single place for all backend HTTP calls.
-//  baseUrl must point to your running server,
-//  e.g. 'http://192.168.1.10:3000' on LAN or
-//       'https://yourserver.com' in production.
-//
-//  Every method returns null / false / empty list
-//  on network error so the app degrades gracefully
-//  when offline.
+//  All backend HTTP calls in one place.
+//  Returns null / false / [] on any failure so
+//  the app degrades gracefully when offline.
 // ─────────────────────────────────────────────
 
 class ApiService {
-  // ── Change this to your server's address ──────
-  static const String baseUrl = 'http://192.168.100.9:3000'; // Android emulator default
+  static const _defaultUrl  = 'http://192.168.1.10:3000';
+  static const _urlPrefKey  = 'dev_base_url';
+  static const _timeout     = Duration(seconds: 10);
 
-  //'http://127.0.0.1:3000'; // localhost default
-  //'http://10.0.2.2:3000'; // Android emulator default
-  // For a real device on the same network: 'http://192.168.x.x:3000'
-  // For production:                        'https://yourserver.com'
+  static String _baseUrl = _defaultUrl;
+  static String get baseUrl => _baseUrl;
 
-  static const Duration _timeout = Duration(seconds: 10);
+  /// Call once from main() before runApp() to restore the saved URL.
+  static Future<void> loadSavedBaseUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_urlPrefKey);
+    if (saved != null && saved.isNotEmpty) _baseUrl = saved;
+  }
 
-  // ── Internal helpers ──────────────────────────
+  /// Called by the dev button to change + persist the URL.
+  static Future<void> setBaseUrl(String url) async {
+    url = url.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'http://$url';
+    }
+    url = url.replaceAll(RegExp(r'/+$'), '');
+    _baseUrl = url;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_urlPrefKey, url);
+  }
 
+  // ── Headers ───────────────────────────────────────────────────────────────
   static Map<String, String> _headers({String? token}) => {
     'Content-Type': 'application/json',
     if (token != null) 'Authorization': 'Bearer $token',
   };
 
-  static Future<Map<String, dynamic>?> _post(
-      String path,
-      Map<String, dynamic> body, {
-        String? token,
-      }) async {
+  // ── Low-level helpers ─────────────────────────────────────────────────────
+  static Future<http.Response?> _get(String path, {String? token}) async {
     try {
-      final res = await http
-          .post(
-        Uri.parse('$baseUrl$path'),
-        headers: _headers(token: token),
-        body: jsonEncode(body),
-      )
+      return await http
+          .get(Uri.parse('$_baseUrl$path'), headers: _headers(token: token))
           .timeout(_timeout);
-      // Return body even on 4xx so callers can read the error message.
-      // Only return null on network failure (caught below).
-      return _decodeAny(res);
-    } catch (_) {
-      return null; // network unavailable — null means "couldn't reach server"
-    }
+    } catch (_) { return null; }
   }
 
-  static Future<Map<String, dynamic>?> _get(
-      String path, {
-        String? token,
-      }) async {
+  static Future<http.Response?> _post(String path, Map<String, dynamic> body, {String? token}) async {
     try {
-      final res = await http
-          .get(Uri.parse('$baseUrl$path'), headers: _headers(token: token))
+      return await http
+          .post(Uri.parse('$_baseUrl$path'),
+          headers: _headers(token: token), body: jsonEncode(body))
           .timeout(_timeout);
-      return _decode(res);
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
-  static Future<Map<String, dynamic>?> _put(
-      String path,
-      Map<String, dynamic> body, {
-        String? token,
-      }) async {
+  static Future<http.Response?> _put(String path, Map<String, dynamic> body, {String? token}) async {
     try {
-      final res = await http
-          .put(
-        Uri.parse('$baseUrl$path'),
-        headers: _headers(token: token),
-        body: jsonEncode(body),
-      )
+      return await http
+          .put(Uri.parse('$_baseUrl$path'),
+          headers: _headers(token: token), body: jsonEncode(body))
           .timeout(_timeout);
-      return _decode(res);
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
-  static Future<bool> _delete(String path, {String? token}) async {
+  static Future<http.Response?> _delete(String path, {String? token}) async {
     try {
-      final res = await http
-          .delete(Uri.parse('$baseUrl$path'), headers: _headers(token: token))
+      return await http
+          .delete(Uri.parse('$_baseUrl$path'), headers: _headers(token: token))
           .timeout(_timeout);
-      return res.statusCode >= 200 && res.statusCode < 300;
-    } catch (_) {
-      return false;
-    }
+    } catch (_) { return null; }
   }
 
-  /// Decodes response; returns null if status >= 400.
-  /// Used by GET/PUT/DELETE where callers treat null as "failed".
-  static Map<String, dynamic>? _decode(http.Response res) {
-    if (res.statusCode >= 400) return null;
+  static Map<String, dynamic>? _json(http.Response? res) {
+    if (res == null) return null;
     try {
       final body = jsonDecode(res.body);
-      if (body is Map<String, dynamic>) return body;
+      if (body is Map<String, dynamic>) return {...body, '_status': res.statusCode};
       return null;
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
-  /// Decodes response regardless of status code.
-  /// Used by POST so callers can read error messages from 4xx responses.
-  /// Returns null only if the body isn't valid JSON or is not a map.
-  static Map<String, dynamic>? _decodeAny(http.Response res) {
-    try {
-      final body = jsonDecode(res.body);
-      if (body is Map<String, dynamic>) {
-        // Inject the HTTP status so callers can distinguish error types.
-        return {...body, '_status': res.statusCode};
-      }
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // ─────────────────────────────────────────────
-  //  Health check
-  // ─────────────────────────────────────────────
-
-  /// Returns true if the server is reachable.
+  // ── Health ────────────────────────────────────────────────────────────────
   static Future<bool> isReachable() async {
-    try {
-      final res = await http
-          .get(Uri.parse('$baseUrl/health'))
-          .timeout(const Duration(seconds: 5));
-      return res.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    final res = await _get('/health');
+    return res?.statusCode == 200;
   }
 
-  // ─────────────────────────────────────────────
-  //  Auth
-  // ─────────────────────────────────────────────
-
-  /// Register a new account.
-  /// Returns { token, user } on success, null on failure.
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  /// POST /auth/register → { token, user } or { error }
   static Future<Map<String, dynamic>?> register({
     required String username,
     required String fullName,
     required String password,
-  }) => _post('/auth/register', {
-    'username': username,
-    'fullName': fullName,
-    'password': password,
-  });
+  }) async {
+    final res = await _post('/auth/register', {
+      'username': username,
+      'fullName': fullName,
+      'password': password,
+    });
+    return _json(res);
+  }
 
-  /// Login.
-  /// Returns { token, user } on success, null on failure.
+  /// POST /auth/login → { token, user } or { error }
   static Future<Map<String, dynamic>?> login({
     required String username,
     required String password,
-  }) => _post('/auth/login', {'username': username, 'password': password});
+  }) async {
+    final res = await _post('/auth/login', {
+      'username': username,
+      'password': password,
+    });
+    return _json(res);
+  }
 
-  /// Reset password (requires current token + current password).
-  /// Returns { ok: true } on success, null on failure.
+  /// POST /auth/reset-password → { ok: true } or { error }
   static Future<Map<String, dynamic>?> resetPassword({
     required String token,
     required String currentPassword,
     required String newPassword,
-  }) => _post(
-    '/auth/reset-password',
-    {'currentPassword': currentPassword, 'newPassword': newPassword},
-    token: token,
-  );
+  }) async {
+    final res = await _post(
+      '/auth/reset-password',
+      {'currentPassword': currentPassword, 'newPassword': newPassword},
+      token: token,
+    );
+    return _json(res);
+  }
 
-  /// Get current user profile.
-  static Future<Map<String, dynamic>?> getMe(String token) =>
-      _get('/auth/me', token: token);
-
-  // ─────────────────────────────────────────────
-  //  Plans
-  // ─────────────────────────────────────────────
-
-  /// List plan stubs: [{ planId, updatedAt }, ...]
-  /// Returns empty list on failure (offline).
+  // ── Plans ─────────────────────────────────────────────────────────────────
+  /// GET /plans → [{ planId, updatedAt }, ...]
   static Future<List<Map<String, dynamic>>> listPlanStubs(String token) async {
+    final res = await _get('/plans', token: token);
+    if (res == null || res.statusCode >= 400) return [];
     try {
-      final res = await http
-          .get(Uri.parse('$baseUrl/plans'), headers: _headers(token: token))
-          .timeout(_timeout);
-      if (res.statusCode >= 400) return [];
       final body = jsonDecode(res.body);
-      if (body is List) {
-        return body.cast<Map<String, dynamic>>();
-      }
-      return [];
-    } catch (_) {
-      return [];
-    }
+      if (body is List) return body.cast<Map<String, dynamic>>();
+    } catch (_) {}
+    return [];
   }
 
-  /// Get full plan JSON for a single planId.
-  /// Returns null on failure.
-  static Future<Map<String, dynamic>?> getPlan(
-      String token,
-      String planId,
-      ) => _get('/plans/$planId', token: token);
-
-  /// Upsert a plan on the server.
-  /// [planJson] must be the result of plan.toJsonString().
-  /// Returns { planId, updatedAt } on success, null on failure.
-  static Future<Map<String, dynamic>?> upsertPlan(
-      String token,
-      String planId,
-      String planJson,
-      ) => _put('/plans/$planId', {'planJson': planJson}, token: token);
-
-  /// Delete a plan from the server.
-  /// Fire-and-forget safe — returns false silently if offline.
-  static Future<bool> deletePlan(String token, String planId) =>
-      _delete('/plans/$planId', token: token);
-
-  /// Batch upsert multiple plans (used on first login sync).
-  /// [plans] = [{ planId: String, planJson: String }, ...]
-  static Future<bool> batchUpsertPlans(
-      String token,
-      List<Map<String, String>> plans,
-      ) async {
-    final res = await _post('/plans/batch', {'plans': plans}, token: token);
-    return res != null;
+  /// GET /plans/:planId → { planId, planJson, updatedAt }
+  static Future<Map<String, dynamic>?> getPlan(String token, String planId) async {
+    final res = await _get('/plans/$planId', token: token);
+    if (res == null || res.statusCode >= 400) return null;
+    return _json(res);
   }
 
-  // ─────────────────────────────────────────────
-  //  Error message helper
-  // ─────────────────────────────────────────────
-
-  /// Extracts an error message from a raw HTTP response body string,
-  /// falling back to [fallback] if parsing fails.
-  static String errorMessage(String? rawBody, {String fallback = 'Something went wrong'}) {
-    if (rawBody == null) return fallback;
-    try {
-      final j = jsonDecode(rawBody) as Map<String, dynamic>;
-      return j['error'] as String? ?? fallback;
-    } catch (_) {
-      return fallback;
-    }
+  /// PUT /plans/:planId → { planId, updatedAt }
+  static Future<bool> upsertPlan(String token, String planId, String planJson) async {
+    final res = await _put('/plans/$planId', {'planJson': planJson}, token: token);
+    return res != null && res.statusCode < 400;
   }
 
-  /// Convenience: performs a POST and also returns the raw response
-  /// so callers can read error messages.
-  static Future<({int statusCode, Map<String, dynamic>? body})> postRaw(
-      String path,
-      Map<String, dynamic> body, {
-        String? token,
-      }) async {
-    try {
-      final res = await http
-          .post(
-        Uri.parse('$baseUrl$path'),
-        headers: _headers(token: token),
-        body: jsonEncode(body),
-      )
-          .timeout(_timeout);
-      Map<String, dynamic>? decoded;
-      try { decoded = jsonDecode(res.body); } catch (_) {}
-      return (statusCode: res.statusCode, body: decoded);
-    } catch (_) {
-      return (statusCode: 0, body: null);
-    }
+  /// DELETE /plans/:planId → { ok: true }
+  static Future<bool> deletePlan(String token, String planId) async {
+    final res = await _delete('/plans/$planId', token: token);
+    return res != null && res.statusCode < 400;
   }
 }

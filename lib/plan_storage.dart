@@ -2,112 +2,104 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'training_plan_model.dart';
 import 'sync_service.dart';
+import 'auth_storage.dart';
 
 // ─────────────────────────────────────────────
-//  PlanStorage — stores multiple training plans
-//  and tracks which one is currently active.
+//  PlanStorage  (simplified)
 //
-//  Keys used in SharedPreferences:
+//  Keys in SharedPreferences:
 //    'plans'          → JSON list of all saved plans
 //    'active_plan_id' → id of the currently selected plan
 //
-//  Note: all writes go through a single SharedPreferences
-//  instance obtained once per call to avoid the race
-//  condition where save() calls loadAll() separately,
-//  potentially reading stale data between two rapid saves.
+//  Ownership rules:
+//    ownerId == "offline" → visible to everyone (guest + all accounts)
+//    ownerId == <userId>  → visible only to that logged-in user
+//
+//  Guest session  → loadAll() returns only offline plans
+//  User session   → loadAll() returns that user's plans + offline plans
 // ─────────────────────────────────────────────
 
 class PlanStorage {
   static const _plansKey    = 'plans';
   static const _activeIdKey = 'active_plan_id';
 
-  // ── Save a plan (replaces if same id exists, appends otherwise) ──
-  //  Also pushes the plan to the server in the background.
-
+  // ── Save a plan ───────────────────────────────────────────────────────────
+  // Replaces existing plan with the same id, or appends if new.
+  // Sets it as the active plan and pushes to server in the background.
   static Future<void> save(TrainingPlan plan) async {
-    // Obtain prefs once and pass it through so loadAll doesn't
-    // open a second instance that might read before this write lands.
     final prefs = await SharedPreferences.getInstance();
-    final plans = _decodePlans(prefs.getString(_plansKey));
-
-    // Stamp the modification time so the sync service can compare with the server.
-    final stamped = TrainingPlan(
-      id:                    plan.id,
-      profile:               plan.profile,
-      startDate:             plan.startDate,
-      tim:                   plan.tim,
-      workouts:              plan.workouts,
-      intensityDeltaSeconds: plan.intensityDeltaSeconds,
-      setsDelta:             plan.setsDelta,
-      lastModifiedAt:        DateTime.now().toUtc(),
-    );
-
-    final idx = plans.indexWhere((p) => p.id == stamped.id);
-    if (idx >= 0) {
-      plans[idx] = stamped;
-    } else {
-      plans.add(stamped);
-    }
-
-    await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
-    await prefs.setString(_activeIdKey, stamped.id);
-
-    // Push to server in the background — does not block local save.
-    SyncService.pushPlan(stamped);
-  }
-
-  // ── Save without changing the active plan (used by sync pull) ──
-  //  Does NOT push back to the server (it already came from there).
-
-  static Future<void> saveWithoutActivating(TrainingPlan plan) async {
-    final prefs = await SharedPreferences.getInstance();
-    final plans = _decodePlans(prefs.getString(_plansKey));
+    final plans = _decode(prefs.getString(_plansKey));
 
     final idx = plans.indexWhere((p) => p.id == plan.id);
     if (idx >= 0) {
-      plans[idx] = plan; // update existing
+      plans[idx] = plan;
     } else {
-      plans.add(plan);   // add new
+      plans.add(plan);
     }
 
     await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
-    // Intentionally does NOT update _activeIdKey or call SyncService.
+    await prefs.setString(_activeIdKey, plan.id);
+
+    // Push to server in the background — does not block local save.
+    SyncService.pushPlan(plan);
   }
 
-  // ── Load all saved plans ──
-
-  static Future<List<TrainingPlan>> loadAll() async {
+  // ── Save without changing the active plan ────────────────────────────────
+  // Used by SyncService when pulling plans from the server.
+  // Does NOT push back to the server.
+  static Future<void> saveWithoutActivating(TrainingPlan plan) async {
     final prefs = await SharedPreferences.getInstance();
-    return _decodePlans(prefs.getString(_plansKey));
+    final plans = _decode(prefs.getString(_plansKey));
+
+    final idx = plans.indexWhere((p) => p.id == plan.id);
+    if (idx >= 0) {
+      plans[idx] = plan;
+    } else {
+      plans.add(plan);
+    }
+
+    await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
   }
 
-  // ── Load the currently active plan ──
+  // ── Load plans visible to the current session ─────────────────────────────
+  // Guest  → offline plans only
+  // User   → their plans + offline plans
+  static Future<List<TrainingPlan>> loadAll() async {
+    final prefs  = await SharedPreferences.getInstance();
+    final all    = _decode(prefs.getString(_plansKey));
+    final userId = await _currentUserId();
+    return _filterByOwner(all, userId);
+  }
 
+  // ── Load ALL plans regardless of owner (used by SyncService) ─────────────
+  static Future<List<TrainingPlan>> loadAllUnfiltered() async {
+    final prefs = await SharedPreferences.getInstance();
+    return _decode(prefs.getString(_plansKey));
+  }
+
+  // ── Load the active plan ──────────────────────────────────────────────────
   static Future<TrainingPlan?> loadActive() async {
     final prefs    = await SharedPreferences.getInstance();
     final activeId = prefs.getString(_activeIdKey);
-    if (activeId == null) return null;
-    final plans = _decodePlans(prefs.getString(_plansKey));
-    try {
-      return plans.firstWhere((p) => p.id == activeId);
-    } catch (_) {
-      return plans.isNotEmpty ? plans.last : null;
+    final plans    = await loadAll(); // filtered for current session
+    if (activeId != null) {
+      try {
+        return plans.firstWhere((p) => p.id == activeId);
+      } catch (_) {}
     }
+    return plans.isNotEmpty ? plans.first : null;
   }
 
-  // ── Set which plan is active ──
-
+  // ── Set the active plan ───────────────────────────────────────────────────
   static Future<void> setActive(String planId) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_activeIdKey, planId);
   }
 
-  // ── Delete a plan by id ──
-  //  Also mirrors the deletion to the server in the background.
-
+  // ── Delete a plan ─────────────────────────────────────────────────────────
   static Future<void> delete(String planId) async {
-    final prefs  = await SharedPreferences.getInstance();
-    final plans  = _decodePlans(prefs.getString(_plansKey));
+    final prefs = await SharedPreferences.getInstance();
+    final plans = _decode(prefs.getString(_plansKey));
     plans.removeWhere((p) => p.id == planId);
     await prefs.setString(_plansKey, jsonEncode(plans.map((p) => p.toJson()).toList()));
 
@@ -124,8 +116,7 @@ class PlanStorage {
     SyncService.deletePlan(planId);
   }
 
-  // ── Clear everything ──
-
+  // ── Clear everything ──────────────────────────────────────────────────────
   static Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_plansKey);
@@ -133,22 +124,14 @@ class PlanStorage {
     await prefs.remove(_totalMetersKey);
   }
 
-  // ── Total meters run (lifetime, across all sessions) ──────────────────────
-  //
-  //  Stored as a plain double under 'total_meters_run'.
-  //  addMeters() reads, increments, and writes within a single prefs instance
-  //  to avoid lost-update races between rapid calls.
-
+  // ── Total meters run ──────────────────────────────────────────────────────
   static const _totalMetersKey = 'total_meters_run';
 
-  /// Returns the total meters run so far (0.0 if never set).
   static Future<double> loadTotalMeters() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getDouble(_totalMetersKey) ?? 0.0;
   }
 
-  /// Adds [meters] to the running total and persists it.
-  /// No-ops when meters <= 0.
   static Future<void> addMeters(double meters) async {
     if (meters <= 0) return;
     final prefs   = await SharedPreferences.getInstance();
@@ -156,17 +139,53 @@ class PlanStorage {
     await prefs.setDouble(_totalMetersKey, current + meters);
   }
 
-  /// Overwrites the total with an explicit value (useful for corrections).
   static Future<void> setTotalMeters(double meters) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_totalMetersKey, meters.clamp(0.0, double.infinity));
   }
 
-  // ── Internal helper ──────────────────────────────────────────────────────
-  //  Decodes the raw JSON string into a list of TrainingPlans.
-  //  Returns an empty list on null input or any parse error.
+  // ── Per-plan step tracking ────────────────────────────────────────────────
+  static Future<void> addStepsToActivePlan(int steps) async {
+    if (steps <= 0) return;
+    final plan = await loadActive();
+    if (plan == null) return;
 
-  static List<TrainingPlan> _decodePlans(String? raw) {
+    final updated = TrainingPlan(
+      id:                    plan.id,
+      profile:               plan.profile,
+      startDate:             plan.startDate,
+      tim:                   plan.tim,
+      workouts:              plan.workouts,
+      intensityDeltaSeconds: plan.intensityDeltaSeconds,
+      setsDelta:             plan.setsDelta,
+      totalSteps:            plan.totalSteps + steps,
+      ownerId:               plan.ownerId, // always preserve original owner
+      lastModifiedAt:        DateTime.now().toUtc(),
+    );
+
+    await save(updated);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  static Future<String?> _currentUserId() async {
+    final user = await AuthStorage.getUser();
+    final id   = user?['id'];
+    if (id == null) return null;
+    return id.toString();
+  }
+
+  static List<TrainingPlan> _filterByOwner(
+      List<TrainingPlan> plans, String? userId) {
+    if (userId == null) {
+      return plans; // guest — sees all local plans
+    }
+    // Logged-in — their own plans + offline plans
+    return plans
+        .where((p) => p.ownerId == userId || p.ownerId == TrainingPlan.ownerOffline)
+        .toList();
+  }
+
+  static List<TrainingPlan> _decode(String? raw) {
     if (raw == null) return [];
     try {
       final list = jsonDecode(raw) as List<dynamic>;
